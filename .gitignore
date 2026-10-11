@@ -37,6 +37,7 @@ keystore.properties
 Thumbs.db
 .zcode/
 .opensuilla/
+.tmp_*
 
 # 编辑器
 .LCK*

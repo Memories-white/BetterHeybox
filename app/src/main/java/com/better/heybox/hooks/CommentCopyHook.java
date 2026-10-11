@@ -9,6 +9,8 @@ import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -53,6 +55,7 @@ public final class CommentCopyHook {
     private static final long MENU_DISMISS_DELAY_MS = 200L;
     private static final long SHEET_WINDOW_MS = 1_500L;
     private static final long TOAST_SUPPRESS_MS = 2_500L;
+    private static final long OWN_TOAST_GRACE_MS = 2_000L;
     /** View-node budget for one lookup (#37). Only real copies reach it, so it stays generous on purpose:
      *  a missed target costs a broken feature, an oversized scan only costs a few ms once per copy. */
     private static final int MAX_SCAN_NODES = 20_000;
@@ -70,6 +73,8 @@ public final class CommentCopyHook {
     private volatile long lastLongPressAt;
     private volatile long lastSheetAt;
     private volatile long suppressToastUntil;
+    private volatile String ownToastText;
+    private volatile long ownToastAt;
     private volatile long lastNoMatchLogAt;
     // let clipboard writes through while the card is open
     private volatile boolean freeCopyScreenShowing;
@@ -87,6 +92,7 @@ public final class CommentCopyHook {
                     "[评论自由复制] 开关已变更：该功能在下一次点「复制」时按新状态生效");
         }
     }
+
 
     public void install(ClassLoader cl) {
         try {
@@ -369,7 +375,9 @@ public final class CommentCopyHook {
                 module.hook(method).intercept(chain -> {
                     try {
                         Object arg = chain.getArg(0);
-                        if (inSuppressWindow() || isCopyToastText(String.valueOf(arg))) {
+                        String shown = arg == null ? null : String.valueOf(arg);
+                        if (!isOwnToastText(shown)
+                                && (inSuppressWindow() || isCopyToastText(shown))) {
                             module.logd(Log.WARN, module.TAG, "[评论自由复制] 已抑制宿主提示（"
                                     + clazz.getSimpleName() + "#" + method.getName() + "）："
                                     + (arg == null ? "null" : summarize(String.valueOf(arg))));
@@ -436,6 +444,9 @@ public final class CommentCopyHook {
             shown = value == null ? null : String.valueOf(value);
         } catch (Throwable ignored) {
         }
+        if (isOwnToastText(shown)) {
+            return false;
+        }
         // inside the window: swallow regardless of text (custom-view toasts included);
         // outside: only the "copied to clipboard" wording (toast-before-copy order)
         if (!inSuppressWindow() && !isCopyToastText(shown)) {
@@ -492,6 +503,30 @@ public final class CommentCopyHook {
         long now = SystemClock.uptimeMillis();
         lastSheetAt = now;
         suppressToastUntil = now + TOAST_SUPPRESS_MS;
+        ownToastAt = 0L;
+    }
+
+    private void stampOwnToast(String text) {
+        ownToastText = text;
+        ownToastAt = SystemClock.uptimeMillis();
+    }
+
+    private boolean isOwnToastText(String shown) {
+        if (shown == null || ownToastText == null) {
+            return false;
+        }
+        String text = shown.toString();
+        if (SystemClock.uptimeMillis() - ownToastAt > OWN_TOAST_GRACE_MS) {
+            return false;
+        }
+        return ownToastText.equals(text);
+    }
+
+    public static void noteOwnToast(String text) {
+        CommentCopyHook instance = sInstance;
+        if (instance != null) {
+            instance.stampOwnToast(text);
+        }
     }
 
     // ---- (2) long-press target
@@ -500,9 +535,9 @@ public final class CommentCopyHook {
         try {
             Method method = View.class.getDeclaredMethod("performLongClick");
             module.hook(method).intercept(chain -> {
-                Object result = chain.proceed();
-                try {
-                    if (module.isEnabled(App.KEY_COMMENT_FREE_COPY, true)) {
+                if (module.isEnabled(App.KEY_COMMENT_FREE_COPY, true)
+                        || module.isEnabled(App.KEY_SCREENSHOT_ENABLED, true)) {
+                    try {
                         Object self = chain.getThisObject();
                         if (self instanceof View) {
                             View comment = findCommentViewNear((View) self);
@@ -511,10 +546,11 @@ public final class CommentCopyHook {
                                 lastLongPressAt = SystemClock.uptimeMillis();
                             }
                         }
+                    } catch (Throwable t) {
+                        module.logd(Log.WARN, module.TAG, "记录长按目标失败: " + t);
                     }
-                } catch (Throwable t) {
-                    module.logd(Log.WARN, module.TAG, "记录长按目标失败: " + t);
                 }
+                Object result = chain.proceed();
                 return result;
             });
             return true;
@@ -536,6 +572,11 @@ public final class CommentCopyHook {
             return null;
         }
         return target;
+    }
+
+    public static View recordedCommentForSharePanel() {
+        CommentCopyHook instance = sInstance;
+        return instance == null ? null : instance.validRecordedView();
     }
 
     // nearest comment view: self -> subtree -> up to 4 ancestors (single match only)
@@ -784,18 +825,6 @@ public final class CommentCopyHook {
                         }
                     }));
         }
-        // Add screenshot option if enabled
-        if (module.isEnabled(App.KEY_SCREENSHOT_ENABLED, true)) {
-            container.addView(sheetDivider(activity, dividerColor));
-            container.addView(sheetRow(activity, "截图此评论", primary, ripple,
-                    new View.OnClickListener() {
-                        @Override
-                        public void onClick(View v) {
-                            dialog.dismiss();
-                            screenshotComment(activity, commentView);
-                        }
-                    }));
-        }
         container.addView(sheetDivider(activity, dividerColor));
         container.addView(sheetRow(activity, "取消", secondary, ripple,
                 new View.OnClickListener() {
@@ -947,8 +976,6 @@ public final class CommentCopyHook {
         root.addView(hint);
 
         freeCopyScreenShowing = true;
-        // system-toolbar copies must pass through
-        suppressToastUntil = 0L;
 
         dialog.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
             @Override
@@ -1187,8 +1214,7 @@ public final class CommentCopyHook {
 
     private void toast(String text) {
         try {
-            // let our own toast through
-            suppressToastUntil = 0L;
+            stampOwnToast(text);
             Context context = App.resolveAppContext();
             if (context != null) {
                 Toast.makeText(context, text, Toast.LENGTH_SHORT).show();
@@ -1232,20 +1258,5 @@ public final class CommentCopyHook {
     private static String summarize(String text) {
         String one = text.replace('\n', ' ');
         return one.length() <= 24 ? one : one.substring(0, 24) + "…";
-    }
-
-    private void screenshotComment(Activity activity, TextView commentView) {
-        try {
-            com.better.heybox.hooks.ScreenshotCaptureHook screenshotHook =
-                com.better.heybox.hooks.ScreenshotCaptureHook.getInstance();
-            if (screenshotHook != null) {
-                screenshotHook.captureCommentDirectly(activity, commentView);
-            } else {
-                Toast.makeText(activity, "截图功能未启用", Toast.LENGTH_SHORT).show();
-            }
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "评论截图失败: " + t);
-            Toast.makeText(activity, "截图失败", Toast.LENGTH_SHORT).show();
-        }
     }
 }

@@ -38,7 +38,7 @@ public final class ScreenshotRenderer {
     private static final int SETTLE_EXTRA_MS = 140;
     
     private static final int CHUNK_OVERLAP = 16;
-    
+
     private static final int MAX_STITCH_CHUNKS = 12;
 
     private ScreenshotRenderer() {
@@ -257,6 +257,10 @@ public final class ScreenshotRenderer {
         }
 
         int total = Math.min(MAX_OUTPUT_HEIGHT, viewHeight * MAX_STITCH_CHUNKS);
+        int content = contentHeight(web);
+        if (content > total) {
+            total = content;
+        }
         try {
             long budget = Runtime.getRuntime().maxMemory() / 2;
             int byMemory = (int) Math.max(viewHeight, Math.min(Integer.MAX_VALUE, budget / (4L * width)));

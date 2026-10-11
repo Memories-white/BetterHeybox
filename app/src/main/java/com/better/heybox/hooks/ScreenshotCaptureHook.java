@@ -46,8 +46,13 @@ public final class ScreenshotCaptureHook {
     private static final String TAG = "BetterHeybox";
     private static final long POLL_INTERVAL_MS = 1200L;
     private static final int ACCENT = 0xFF3B82F6;
+    private static final String SAVED_TEXT = "已保存到相册 Pictures/Heybox";
+    private static final String COMMENT_SAVED_TEXT = "单条评论截图已保存到相册 Pictures/Heybox";
 
     private static volatile ScreenshotCaptureHook instance;
+
+    public static final int SOURCE_SELECTION = 0;
+    public static final int SOURCE_COMMENT = 1;
 
     private final MainModule module;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -561,7 +566,7 @@ public final class ScreenshotCaptureHook {
                 if (wanted > units.size()) {
                     toast(activity, "有 " + (wanted - units.size()) + " 项已划出屏幕，未包含在截图中");
                 }
-                saveAndShare(activity.getApplicationContext(), image, share);
+                saveAndShare(activity.getApplicationContext(), image, share, SOURCE_SELECTION);
             }
         });
     }
@@ -679,6 +684,11 @@ public final class ScreenshotCaptureHook {
     }
 
     private void saveAndShare(final Context context, final Bitmap image, final boolean share) {
+        saveAndShare(context, image, share, SOURCE_SELECTION);
+    }
+
+    private void saveAndShare(final Context context, final Bitmap image, final boolean share,
+            final int source) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -707,7 +717,7 @@ public final class ScreenshotCaptureHook {
                         if (uri == null) {
                             module.logd(Log.ERROR, TAG,
                                     (share ? "准备分享截图失败: " : "保存截图失败: ") + error);
-                            toast(context, share ? "分享截图失败" : "保存截图失败");
+                            toast(context, share ? "分享截图失败" : saveFailureText(source));
                             return;
                         }
                         if (share) {
@@ -724,7 +734,9 @@ public final class ScreenshotCaptureHook {
                                 toast(context, "分享失败");
                             }
                         } else {
-                            toast(context, "已保存到相册 Pictures/Heybox");
+                            module.logd(Log.INFO, TAG, "截图保存完成: " + uri + (source == SOURCE_COMMENT
+                                    ? "（单条长按截图 #50）" : ""));
+                            toast(context, source == SOURCE_COMMENT ? COMMENT_SAVED_TEXT : SAVED_TEXT);
                         }
                     }
                 });
@@ -732,7 +744,8 @@ public final class ScreenshotCaptureHook {
         }, share ? "heybox-screenshot-share" : "heybox-screenshot-save").start();
     }
 
-    public void captureCommentDirectly(final Activity activity, final View anyViewInComment) {
+    public void captureCommentDirectly(final Activity activity, final View anyViewInComment,
+            final int source) {
         if (activity == null || anyViewInComment == null) {
             return;
         }
@@ -741,7 +754,7 @@ public final class ScreenshotCaptureHook {
             public void run() {
                 ScreenshotUnit unit = ScreenshotUnit.resolve(anyViewInComment);
                 if (unit == null) {
-                    toast(activity, "没有识别到这条留言");
+                    toast(activity, source == SOURCE_COMMENT ? "没有识别到这条评论" : "没有识别到这条留言");
                     return;
                 }
                 if (ScreenshotSelectionManager.get().isActive()) {
@@ -755,14 +768,25 @@ public final class ScreenshotCaptureHook {
                             public void onCaptured(Bitmap image) {
                                 capturing = false;
                                 if (image == null) {
-                                    toast(activity, "截图失败");
+                                    toast(activity, source == SOURCE_COMMENT ? "截图失败，请重试" : "截图失败");
                                     return;
                                 }
-                                saveAndShare(activity.getApplicationContext(), image, false);
+                                module.logd(Log.INFO, TAG, "单条评论截图已渲染: "
+                                        + image.getWidth() + "x" + image.getHeight()
+                                        + " 来源=" + (source == SOURCE_COMMENT ? "长按评论" : "复制菜单"));
+                                saveAndShare(activity.getApplicationContext(), image, false, source);
                             }
                         });
             }
         });
+    }
+
+    public void captureCommentDirectly(final Activity activity, final View anyViewInComment) {
+        captureCommentDirectly(activity, anyViewInComment, SOURCE_SELECTION);
+    }
+
+    private static String saveFailureText(int source) {
+        return source == SOURCE_COMMENT ? "单条评论截图保存失败" : "保存截图失败";
     }
 
     private ViewGroup contentOf(Activity activity) {
@@ -779,6 +803,10 @@ public final class ScreenshotCaptureHook {
     }
 
     private void toast(Context context, String message) {
+        try {
+            CommentCopyHook.noteOwnToast(message);
+        } catch (Throwable ignored) {
+        }
         try {
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show();
         } catch (Throwable ignored) {

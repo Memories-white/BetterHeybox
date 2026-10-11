@@ -454,6 +454,7 @@ public final class SettingsEntryHook {
         if (PAGE_ADS.equals(pageId)) {
             addBase(groups, "广告过滤");
             insertPostFilterGroup(groups);
+            insertFeedRefreshGroup(groups);
             insertCommentFilterGroup(groups);
             addBase(groups, "搜索页精简");
             addBase(groups, "帖子详情精简");
@@ -1131,6 +1132,9 @@ public final class SettingsEntryHook {
                 new SwitchDef("屏蔽插眼评论",
                         "在数据/列表层直接摘掉带 Cy 标的评论",
                         App.KEY_HOST_HIDE_CY, true, false),
+                new SwitchDef("插眼保留第一条",
+                        "同一评论区里 cy 后面的内容完全一致时只保留第一条",
+                        App.KEY_CY_KEEP_FIRST, false, false),
                 new SwitchDef("评论关键词屏蔽/ 无意义评论",
                         "关键词屏蔽评论",
                         App.KEY_BLOCK_CY_COMMENT, false, false),
@@ -1147,6 +1151,25 @@ public final class SettingsEntryHook {
                 new SwitchDef("评论过滤状态",
                         "查看安装结果与各层命中计数",
                         null, false, false, true, null, Action.COMMENT_FILTER_DIAG),
+        });
+        int insertAt = groups.size();
+        for (int i = 0; i < groups.size(); i++) {
+            if ("发帖过滤".equals(groups.get(i).title)) {
+                insertAt = i + 1;
+                break;
+            }
+        }
+        groups.add(insertAt, group);
+    }
+
+    private void insertFeedRefreshGroup(List<SettingsGroup> groups) {
+        SettingsGroup group = new SettingsGroup("首页信息流", new SwitchDef[]{
+                new SwitchDef("撤销刷新气泡",
+                        "刷新后显示宿主的「撤销」气泡，点击把刷新前的内容插回列表",
+                        App.KEY_FEED_REFRESH_UNDO, false, false),
+                new SwitchDef("刷新保留上次内容",
+                        "刷新后上一次内容仍在「上次浏览」分隔线下",
+                        App.KEY_FEED_KEEP_PREVIOUS, false, false),
         });
         int insertAt = groups.size();
         for (int i = 0; i < groups.size(); i++) {
@@ -4168,7 +4191,7 @@ public final class SettingsEntryHook {
             TextSelectHook.refresh();
         }
         if (App.KEY_BLOCK_CY_COMMENT.equals(key) || App.KEY_HOST_HIDE_CY.equals(key)
-                || App.KEY_BLOCK_GAME_RELAY.equals(key)) {
+                || App.KEY_BLOCK_GAME_RELAY.equals(key) || App.KEY_CY_KEEP_FIRST.equals(key)) {
             CommentFilterHook.refresh();
         }
         return localOk;

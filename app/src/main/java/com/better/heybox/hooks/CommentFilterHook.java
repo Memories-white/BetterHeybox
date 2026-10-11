@@ -116,6 +116,11 @@ public final class CommentFilterHook {
 
     private volatile long lastAutoLoadAt;
 
+    private final java.util.Map<String, Boolean> keptCyIds =
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>(16, 0.75f, false));
+
+    private static final int KEEP_FIRST_CY_MAX = 256;
+
     private final Handler main = createMainHandler();
 
     /** Compiled keyword cache. */
@@ -181,7 +186,8 @@ public final class CommentFilterHook {
                 + " / 新评论行=" + epoxy + " 处"
                 + " / 兜底过滤=" + (isEnabled() ? "开启" : "关闭")
                 + " / 屏蔽插眼=" + (isHostHideCyEnabled() ? "开启" : "关闭")
-                + " / 游戏名接龙=" + (gameRelayEnabled() ? "开启" : "关闭"));
+                + " / 游戏名接龙=" + (gameRelayEnabled() ? "开启" : "关闭")
+                + " / 插眼保留首条=" + (keepFirstCyEnabled() ? "开启" : "关闭"));
     }
 
     public static String diagnostics() {
@@ -195,6 +201,8 @@ public final class CommentFilterHook {
                 + "（已配置 " + instance.keywordMatchers().size() + " 条）\n"
                 + "屏蔽游戏名接龙：" + (instance.gameRelayEnabled() ? "开启" : "关闭")
                 + "（残留可见字 ≤ " + MAX_RELAY_VISIBLE_CHARS + "）\n"
+                + "插眼保留第一条：" + (instance.keepFirstCyEnabled() ? "开启" : "关闭")
+                + "（已登记 " + instance.keptCyIdsSize() + " 组）\n"
                 + "命中计数：数据层 " + instance.dataHits.get()
                 + " / 列表 " + instance.listHits.get()
                 + " / 楼中楼列表 " + instance.subListHits.get()
@@ -238,6 +246,9 @@ public final class CommentFilterHook {
         int blocked = 0;
         long started = SystemClock.elapsedRealtime();
         boolean budgetLogged = false;
+        if (keepFirstCyEnabled()) {
+            pickKeepFirstCyId(raw, false);
+        }
         for (Object item : raw) {
             if (SystemClock.elapsedRealtime() - started > PASS_BUDGET_MS) {
                 budgetHits.incrementAndGet();
@@ -549,6 +560,12 @@ public final class CommentFilterHook {
                     comment = alt;
                 }
             }
+            if (keepFirstCyEnabled()) {
+                List<?> subList = commentList(chain.getArg(4));
+                if (subList != null) {
+                    pickKeepFirstCyId(subList, true);
+                }
+            }
             String reason = commentReason(comment);
             if (reason != null) {
                 countHit("楼中楼行", reason);
@@ -675,6 +692,9 @@ public final class CommentFilterHook {
         try {
             if (commentFilterActive() && arg instanceof List) {
                 List<?> list = (List<?>) arg;
+                if (keepFirstCyEnabled()) {
+                    pickKeepFirstCyId(list, true);
+                }
                 if (list.size() > 1) {
                     floorKey = list.get(0);
                     if (autoLoadDone(floorKey) < MAX_AUTO_LOADS) {
@@ -918,15 +938,22 @@ public final class CommentFilterHook {
         if (isEnabled()) {
             String reason = singleReason(comment);
             if (reason != null) {
-                return reason;
+                return waiveKeptCy(comment, reason);
             }
         } else if (isHostHideCyEnabled()) {
             String reason = cyMarkReason(comment);
             if (reason != null) {
-                return reason;
+                return waiveKeptCy(comment, reason);
             }
         }
         return gameLinkReason(comment);
+    }
+
+    private String waiveKeptCy(Object comment, String reason) {
+        if (!isCyComment(comment) || !isKeptCy(comment)) {
+            return reason;
+        }
+        return null;
     }
 
     private String floorReason(Object floor) {
@@ -1205,6 +1232,121 @@ public final class CommentFilterHook {
         return "cy".equals(text) || "插眼".equals(text);
     }
 
+
+    private boolean keepFirstCyEnabled() {
+        return module.isEnabled(App.KEY_CY_KEEP_FIRST, false) && cyMarkFilterActive();
+    }
+
+    private boolean isCyComment(Object comment) {
+        if (comment == null) {
+            return false;
+        }
+        return isTruthy(safeGet(comment, "getIs_cy")) || isCyText(safeGet(comment, "getText"));
+    }
+
+    private String cyBodyOf(Object comment) {
+        String raw = safeGet(comment, "getText");
+        if (raw == null || raw.isEmpty()) {
+            return "";
+        }
+        String text = ANY_TAG.matcher(raw).replaceAll(" ");
+        text = INVISIBLE.matcher(text).replaceAll("").toLowerCase(Locale.ROOT);
+        if (text.startsWith("cy")) {
+            return text.substring(2);
+        }
+        if (text.startsWith("插眼")) {
+            return text.substring(2);
+        }
+        return text;
+    }
+
+    private Object firstCommentOf(Object item) {
+        List<?> comments = commentList(item);
+        return comments != null && !comments.isEmpty() ? comments.get(0) : item;
+    }
+
+    private String commentIdOf(Object comment) {
+        String id = safeGet(comment, "getCommentid");
+        if (id != null && !id.isEmpty() && !"null".equals(id)) {
+            return id;
+        }
+        return "obj@" + System.identityHashCode(comment);
+    }
+
+    private boolean isKeptCy(Object comment) {
+        if (!keepFirstCyEnabled() || comment == null) {
+            return false;
+        }
+        String id = commentIdOf(comment);
+        synchronized (keptCyIds) {
+            return keptCyIds.containsKey(id);
+        }
+    }
+
+    private String pickKeepFirstCyId(List<?> list, boolean skipHead) {
+        if (list == null || list.size() < 2) {
+            return null;
+        }
+        long started = SystemClock.elapsedRealtime();
+        String firstId = null;
+        String body = null;
+        int cyCount = 0;
+        for (int i = skipHead ? 1 : 0; i < list.size(); i++) {
+            if (SystemClock.elapsedRealtime() - started > PASS_BUDGET_MS) {
+                budgetHits.incrementAndGet();
+                return null;
+            }
+            Object comment = firstCommentOf(list.get(i));
+            if (!isCyComment(comment)) {
+                continue;
+            }
+            String current = cyBodyOf(comment);
+            if (cyCount == 0) {
+                body = current;
+                firstId = commentIdOf(comment);
+            } else if (!body.equals(current)) {
+                return null;
+            }
+            cyCount++;
+        }
+        if (cyCount < 2) {
+            return null;
+        }
+        registerKeptCy(firstId, body);
+        return firstId;
+    }
+
+    private void registerKeptCy(String commentId, String body) {
+        if (commentId == null) {
+            return;
+        }
+        synchronized (keptCyIds) {
+            if (keptCyIds.containsKey(commentId)) {
+                return;
+            }
+            keptCyIds.put(commentId, Boolean.TRUE);
+            while (keptCyIds.size() > KEEP_FIRST_CY_MAX) {
+                java.util.Iterator<String> it = keptCyIds.keySet().iterator();
+                it.next();
+                it.remove();
+            }
+        }
+        module.logd(Log.INFO, module.TAG, "保留评论[插眼首条] 本组 cy 正文一致，放行第 1 条 commentid="
+                + commentId + ", cy 后正文=" + abbreviate(body));
+    }
+
+    private int keptCyIdsSize() {
+        synchronized (keptCyIds) {
+            return keptCyIds.size();
+        }
+    }
+
+    private void clearKeptCy() {
+        synchronized (keptCyIds) {
+            keptCyIds.clear();
+        }
+    }
+
     // ---------- keywords ----------
 
     private String keywordHit(String text) {
@@ -1269,6 +1411,7 @@ public final class CommentFilterHook {
     }
 
     private void requestRebind() {
+        clearKeptCy();
         final Object[] snapshot;
         synchronized (adapterRefs) {
             snapshot = adapterRefs.keySet().toArray();

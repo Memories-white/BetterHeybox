@@ -257,6 +257,8 @@ public class App extends Application implements XposedServiceHelper.OnServiceLis
     /** 评论过滤：模块兜底屏蔽 cy（插眼）/ 无意义灌水评论 */
     public static final String KEY_BLOCK_CY_COMMENT = "block_cy_comment";
 
+    public static final String KEY_CY_KEEP_FIRST = "cy_keep_first";
+
     /** 评论过滤：关键词，一行一个，命中评论正文即屏蔽 */
     public static final String KEY_COMMENT_KEYWORDS = "comment_filter_keywords";
 
@@ -265,6 +267,10 @@ public class App extends Application implements XposedServiceHelper.OnServiceLis
 
     /** 评论过滤：接龙判定时把 [cube_xxx] 表情占位符不计入残留字数 */
     public static final String KEY_RELAY_IGNORE_EMOJI = "relay_ignore_emoji";
+
+    public static final String KEY_FEED_REFRESH_UNDO = "feed_refresh_undo";
+
+    public static final String KEY_FEED_KEEP_PREVIOUS = "feed_keep_previous";
 
     /** 诊断：记录首页流条目判定信息 */
     public static final String KEY_FLOW_DIAGNOSE = "flow_diagnose";
@@ -459,8 +465,11 @@ public class App extends Application implements XposedServiceHelper.OnServiceLis
         m.put(KEY_BLOCK_VIDEO_POST, false);
         m.put(KEY_HOST_HIDE_CY, true);
         m.put(KEY_BLOCK_CY_COMMENT, false);
+        m.put(KEY_CY_KEEP_FIRST, false);
         m.put(KEY_BLOCK_GAME_RELAY, false);
         m.put(KEY_RELAY_IGNORE_EMOJI, false);
+        m.put(KEY_FEED_REFRESH_UNDO, false);
+        m.put(KEY_FEED_KEEP_PREVIOUS, false);
         m.put(KEY_FLOW_DIAGNOSE, false);
         m.put(KEY_VERBOSE_LOG, false);
         m.put(KEY_POST_DETAIL_CLEAN, false);

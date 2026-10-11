@@ -23,7 +23,7 @@ public final class WebViewDevToolsHook {
                 try {
                     module.hook(constructor).intercept(chain -> {
                         Object result = chain.proceed();
-                        enableIfNeeded();
+                        applyDevToolsState();
                         return result;
                     });
                     count++;
@@ -37,12 +37,19 @@ public final class WebViewDevToolsHook {
         }
     }
 
-    private void enableIfNeeded() {
-        if (!module.isEnabled(App.KEY_WEBVIEW_DEVTOOLS, false)) return;
+    private static volatile Boolean sLastApplied;
+
+    private void applyDevToolsState() {
+        boolean enable = module.isEnabled(App.KEY_WEBVIEW_DEVTOOLS, false);
+        Boolean last = sLastApplied;
+        if (last != null && last == enable) {
+            return;
+        }
         try {
-            WebView.setWebContentsDebuggingEnabled(true);
+            WebView.setWebContentsDebuggingEnabled(enable);
+            sLastApplied = enable;
         } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "开启 WebView 原生 DevTools 失败", t);
+            module.logd(Log.WARN, module.TAG, "同步 WebView DevTools 状态(" + enable + ")失败", t);
         }
     }
 }

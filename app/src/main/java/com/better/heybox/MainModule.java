@@ -17,11 +17,13 @@ import com.better.heybox.hooks.BottomTabHook;
 import com.better.heybox.hooks.BrowserRedirectHook;
 import com.better.heybox.hooks.CommentCopyHook;
 import com.better.heybox.hooks.CommentFilterHook;
+import com.better.heybox.hooks.CommentScreenshotShareHook;
 import com.better.heybox.hooks.LiquidGlassBottomBarHook;
 import com.better.heybox.hooks.DailyTaskHook;
 import com.better.heybox.hooks.FakeUsageAccessHook;
 import com.better.heybox.hooks.FavourAutoCleanHook;
 import com.better.heybox.hooks.FeedBannerHook;
+import com.better.heybox.hooks.FeedRefreshUndoHook;
 import com.better.heybox.hooks.GameLibraryCleanHook;
 import com.better.heybox.hooks.GeneralHook;
 import com.better.heybox.hooks.ImageShareHook;
@@ -200,6 +202,7 @@ public class MainModule extends XposedModule {
     }
     private void installHooks(PackageReadyParam param) {
         ClassLoader cl = param.getClassLoader();
+        targetClassLoader = cl;
         // crash evidence first: later install/runtime crashes still leave a trace (#37)
         CrashGuard.install();
         // 结算上一次会话：区分「有 Java 堆栈的崩溃」与 native/ANR/LMK 类无堆栈退出
@@ -237,6 +240,8 @@ public class MainModule extends XposedModule {
                 App.KEY_FAVOUR_AUTO_CLEAN);
         registerHook("单列信息流", new SingleColumnFeedHook(this)::install, cl,
                 App.KEY_SINGLE_COLUMN_FEED);
+        registerHook("首页信息流", new FeedRefreshUndoHook(this)::install, cl,
+                App.KEY_FEED_REFRESH_UNDO, App.KEY_FEED_KEEP_PREVIOUS);
         registerHook("搜索页精简", new SearchPageCleanHook(this)::install, cl,
                 App.KEY_SEARCH_HIDE_BANNER, App.KEY_SEARCH_HIDE_DISCOVER, App.KEY_SEARCH_HIDE_HOT_RANK);
         registerHook("游戏库精简", new GameLibraryCleanHook(this)::install, cl,
@@ -250,8 +255,11 @@ public class MainModule extends XposedModule {
                 App.KEY_COPY_POST, App.KEY_CUSTOM_TEXT_SELECT);
         registerHook("评论自由复制", new CommentCopyHook(this)::install, cl,
                 App.KEY_COMMENT_FREE_COPY, App.KEY_CUSTOM_TEXT_SELECT);
+        registerHook("评论分享截图", new CommentScreenshotShareHook(this)::install, cl,
+                App.KEY_SCREENSHOT_ENABLED);
         registerHook("评论过滤", new CommentFilterHook(this)::install, cl,
-                App.KEY_BLOCK_CY_COMMENT, App.KEY_HOST_HIDE_CY, App.KEY_BLOCK_GAME_RELAY);
+                App.KEY_BLOCK_CY_COMMENT, App.KEY_HOST_HIDE_CY, App.KEY_BLOCK_GAME_RELAY,
+                App.KEY_CY_KEEP_FIRST, App.KEY_COMMENT_KEYWORDS);
         registerHook("图片分享", new ImageShareHook(this)::install, cl, App.KEY_SYSTEM_SHARE);
         registerHook("消息红点", new MessageRedDotHook(this)::install, cl,
                 App.KEY_HIDE_MSG_DOT, App.KEY_HIDE_MSG_BADGE);
@@ -339,7 +347,10 @@ public class MainModule extends XposedModule {
             return false;
         }
         spec.installed = true;
-        installHook(spec.label, spec.installer, cl);
+        if (!installHook(spec.label, spec.installer, cl)) {
+            spec.installed = false;
+            return false;
+        }
         return true;
     }
 
@@ -414,9 +425,8 @@ public class MainModule extends XposedModule {
             }
             boolean installedNow = false;
             synchronized (this) {
-                if (!spec.installed) {
+                if (!spec.installed && installHook(spec.label, spec.installer, cl)) {
                     spec.installed = true;
-                    installHook(spec.label, spec.installer, cl);
                     installedNow = true;
                 }
             }
@@ -462,15 +472,17 @@ public class MainModule extends XposedModule {
         return handler;
     }
 
-    private void installHook(String label, HookInstaller installer, ClassLoader cl) {
+    private boolean installHook(String label, HookInstaller installer, ClassLoader cl) {
         long t0 = SystemClock.elapsedRealtime();
         try {
             installer.install(cl);
             Checkpoint.mark("✔ %s Hook 安装完成 (%d ms)", label, SystemClock.elapsedRealtime() - t0);
+            return true;
         } catch (Throwable t) {
             Checkpoint.mark("✘ %s Hook 安装失败: %s (%d ms)",
                     label, t, SystemClock.elapsedRealtime() - t0);
             logd(Log.ERROR, TAG, "✘ " + label + " Hook 安装失败", t);
+            return false;
         }
     }
     private void stashRuntimeStatus() {

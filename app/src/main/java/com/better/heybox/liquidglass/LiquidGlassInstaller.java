@@ -973,11 +973,12 @@ public final class LiquidGlassInstaller {
                     // 玻璃已卸载/重装，本轮询作废
                     return;
                 }
+                if (!bar.isAttachedToWindow()) {
+                    return;
+                }
                 try {
-                    if (bar.isAttachedToWindow()) {
-                        rebuildTabBar(tabBar);
-                        syncPlusButton(bar, tabBar);
-                    }
+                    rebuildTabBar(tabBar);
+                    syncPlusButton(bar, tabBar);
                 } catch (Throwable t) {
                     LiquidGlassLog.logErr("tab visibility sync failed", t);
                 }

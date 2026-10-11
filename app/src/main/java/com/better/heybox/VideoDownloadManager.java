@@ -715,8 +715,34 @@ public final class VideoDownloadManager {
             }
         }
 
-        private void handleFailure(Throwable t) {
+        private void handleSaveFailure(String fileName) {
             if (cancelled.get() || pauseRequested.get()
+                    || state == State.CANCELLED || state == State.PAUSED) {
+                return;
+            }
+            errorMsg = "保存失败（磁盘空间或权限不足）";
+            transition(State.FAILED);
+            final String msg = errorMsg;
+            final String detail = "已保留下载文件: " + fileName;
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (!notifAllowed()) {
+                        return;
+                    }
+                    Notification.Builder builder = buildBase("保存失败")
+                            .setContentText(msg + " · " + displayTitle())
+                            .setAutoCancel(true)
+                            .setStyle(new Notification.BigTextStyle()
+                                    .bigText(msg + " · " + displayTitle() + "\n" + detail))
+                            .addAction(0, "重试", retryPendingIntent())
+                            .addAction(0, "取消", cancelPendingIntent());
+                    showNotification(id(), builder.build());
+                }
+            });
+        }
+
+        private void handleFailure(Throwable t) {            if (cancelled.get() || pauseRequested.get()
                     || state == State.CANCELLED || state == State.PAUSED) {
                 return; // 用户已取消/暂停：不失败化、不自动重试（这正是「下载重复」的来源）
             }
@@ -1021,6 +1047,10 @@ public final class VideoDownloadManager {
             if (cancelled.get() || pauseRequested.get()) {
                 return; // 转存期间被取消：文件已由 cancel 的 deleteTemp 清理
             }
+            if (uri == null) {
+                handleSaveFailure(fileName);
+                return;
+            }
             resultUri = uri;
             savedPath = path;
             total = fetched;
@@ -1043,6 +1073,7 @@ public final class VideoDownloadManager {
         }
 
         private Uri saveToMediaStore(Context context, File file, String fileName, String ext) {
+            Uri uri = null;
             try {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
@@ -1050,7 +1081,7 @@ public final class VideoDownloadManager {
                 values.put(MediaStore.Video.Media.RELATIVE_PATH,
                         Environment.DIRECTORY_MOVIES + "/" + storageSubDir());
                 values.put(MediaStore.Video.Media.IS_PENDING, 1);
-                Uri uri = context.getContentResolver().insert(
+                uri = context.getContentResolver().insert(
                         MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
                 if (uri == null) {
                     return null;
@@ -1058,7 +1089,7 @@ public final class VideoDownloadManager {
                 try (OutputStream os = context.getContentResolver().openOutputStream(uri);
                      InputStream in = new FileInputStream(file)) {
                     if (os == null) {
-                        return null;
+                        throw new IllegalStateException("MediaStore 输出流不可用");
                     }
                     copyStream(in, os);
                 }
@@ -1068,6 +1099,12 @@ public final class VideoDownloadManager {
                 return uri;
             } catch (Throwable t) {
                 moduleLogWarn("写入视频相册失败", t);
+                if (uri != null) {
+                    try {
+                        context.getContentResolver().delete(uri, null, null);
+                    } catch (Throwable ignored) {
+                    }
+                }
                 return null;
             }
         }
@@ -1077,13 +1114,14 @@ public final class VideoDownloadManager {
  */
         private Uri saveToTree(Context context, File file, String fileName, String mime,
                                String treeUriString, StringBuilder outPath) {
+            Uri doc = null;
             try {
                 Uri treeUri = Uri.parse(treeUriString);
                 Uri parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(
                         treeUri, android.provider.DocumentsContract.getTreeDocumentId(treeUri));
                 ContentResolver resolver = context.getContentResolver();
                 // 重名时尝试一次 base(1) 后缀；SAF provider 自身也会对冲突名追加后缀
-                Uri doc = createTreeDocument(resolver, parent, mime, fileName);
+                doc = createTreeDocument(resolver, parent, mime, fileName);
                 if (doc == null) {
                     int dot = fileName.lastIndexOf('.');
                     String base = dot > 0 ? fileName.substring(0, dot) : fileName;
@@ -1096,7 +1134,7 @@ public final class VideoDownloadManager {
                 try (OutputStream os = resolver.openOutputStream(doc);
                      InputStream in = new FileInputStream(file)) {
                     if (os == null) {
-                        return null;
+                        throw new IllegalStateException("SAF 输出流不可用");
                     }
                     copyStream(in, os);
                 }
@@ -1110,6 +1148,13 @@ public final class VideoDownloadManager {
                 return doc;
             } catch (Throwable t) {
                 moduleLogWarn("写入所选文件夹失败", t);
+                if (doc != null) {
+                    try {
+                        android.provider.DocumentsContract.deleteDocument(
+                                context.getContentResolver(), doc);
+                    } catch (Throwable ignored) {
+                    }
+                }
                 return null;
             }
         }
@@ -1126,13 +1171,13 @@ public final class VideoDownloadManager {
         }
 
         private Uri saveToPublicMovies(Context context, File file, String fileName, String ext) {
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_MOVIES), storageSubDir());
             try {
                 if (context.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
                         != PackageManager.PERMISSION_GRANTED) {
                     return null;
                 }
-                File dir = new File(Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_MOVIES), storageSubDir());
                 if (!dir.exists() && !dir.mkdirs()) {
                     return null;
                 }
@@ -1146,6 +1191,8 @@ public final class VideoDownloadManager {
                 return Uri.fromFile(target);
             } catch (Throwable t) {
                 moduleLogWarn("写入公共 Movies 目录失败", t);
+                //noinspection ResultOfMethodCallIgnored
+                new File(dir, fileName).delete();
                 return null;
             }
         }
