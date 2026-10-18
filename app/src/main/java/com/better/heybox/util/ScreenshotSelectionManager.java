@@ -14,7 +14,11 @@ import android.view.ViewParent;
 import android.view.Window;
 import android.widget.TextView;
 
+import com.better.heybox.App;
+import com.better.heybox.HeyboxPrefs;
+
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -36,7 +40,22 @@ public final class ScreenshotSelectionManager {
     private static final int SIGNATURE_NODES = 400;
     private static final int SIGNATURE_CHARS = 400;
 
-    static final boolean DEBUG = false;
+    /**
+     * 诊断开关：跟随「详细日志」(App.KEY_VERBOSE_LOG) 动态生效。
+     *
+     * <p>以前这里是编译期常量 false，javac 会把所有 {@code if (DEBUG)} 分支整段消除，
+     * 排查 #59 时完全看不到选区/命中/尺寸信息。改成每次 {@link #enter} 时刷新。
+     */
+    static volatile boolean DEBUG = false;
+
+    static void refreshDebug() {
+        // Hook 进程里没有模块 App 实例，App.readBoolean 会落到 RemotePreferences 慢路径并返回默认值；
+        // 设置面板写入的是宿主侧的 betterheybox.xml（HeyboxPrefs），这里必须读同一份。
+        DEBUG = HeyboxPrefs.getBoolean(App.KEY_VERBOSE_LOG, false)
+                || App.readBoolean(App.KEY_VERBOSE_LOG, false);
+        android.util.Log.i("BetterHeybox", "截图诊断 调试开关=" + DEBUG
+                + " prefs=" + (App.getPrefs() != null));
+    }
 
     public interface Listener {
         void onSelectionChanged(int count);
@@ -50,10 +69,18 @@ public final class ScreenshotSelectionManager {
 
         public final String signature;
 
+        /** RecyclerView adapter position，-1 表示取不到（例如帖子正文本身）。 */
+        public final int adapterPosition;
+
         Selection(View view, boolean comment, String signature) {
+            this(view, comment, signature, -1);
+        }
+
+        Selection(View view, boolean comment, String signature, int adapterPosition) {
             this.view = view;
             this.comment = comment;
             this.signature = signature;
+            this.adapterPosition = adapterPosition;
         }
     }
 
@@ -68,6 +95,7 @@ public final class ScreenshotSelectionManager {
     private WeakReference<View> postBodyRef = new WeakReference<>(null);
     private Listener listener;
     private boolean active;
+    private int lastInvalidCount;
     private float downRawX;
     private float downRawY;
     private boolean moved;
@@ -114,6 +142,7 @@ public final class ScreenshotSelectionManager {
         if (activity == null || activity.isFinishing()) {
             return false;
         }
+        refreshDebug();
         if (active) {
             exit();
         }
@@ -274,20 +303,26 @@ public final class ScreenshotSelectionManager {
 
     public List<Selection> orderedValidSelections() {
         List<Selection> valid = new ArrayList<>();
+        Activity activity = activityRef.get();
+        int recovered = 0;
+        int dropped = 0;
         for (Selection selection : new ArrayList<>(selected.values())) {
-            View view = selection.view;
-            if (view == null || !view.isAttachedToWindow() || view.getWidth() <= 0) {
+            if (stillValid(selection)) {
+                valid.add(selection);
                 continue;
             }
-            if (view.getParent() == null) {
-                continue;
+            Selection replacement = recoverSelection(activity, selection);
+            if (replacement != null) {
+                valid.add(replacement);
+                recovered++;
+            } else {
+                dropped++;
             }
-            String now = signature(view);
-            if (selection.signature != null && !selection.signature.isEmpty()
-                    && !selection.signature.equals(now)) {
-                continue;
-            }
-            valid.add(selection);
+        }
+        lastInvalidCount = dropped;
+        if (DEBUG && (recovered > 0 || dropped > 0)) {
+            Log.i(TAG, "截图诊断 选区校验 恢复=" + recovered + " 丢弃=" + dropped
+                    + " 有效=" + valid.size() + " 已选=" + selected.size());
         }
         Collections.sort(valid, new Comparator<Selection>() {
             private final int[] location = new int[2];
@@ -299,6 +334,115 @@ public final class ScreenshotSelectionManager {
             }
         });
         return valid;
+    }
+
+    /** 上次取有效选区时被判定失效（划出屏幕/被复用/页面刷新）的数量。 */
+    public int lastInvalidCount() {
+        return lastInvalidCount;
+    }
+
+    /**
+     * 选区是否仍然代表用户当初选中的内容。
+     *
+     * <p>RecyclerView 会把回收的 View 重新绑定到别的条目上，此时 View 引用本身
+     * 还 attached、宽度也正常，只能靠 adapter position 与内容签名区分。位置能取到时
+     * 位置变了就直接判失效；位置取不到时退化为签名比较。
+     */
+    private boolean stillValid(Selection selection) {
+        View view = selection.view;
+        if (view == null || !view.isAttachedToWindow() || view.getWidth() <= 0
+                || view.getParent() == null) {
+            return false;
+        }
+        int position = adapterPositionOf(view);
+        if (position >= 0 && selection.adapterPosition >= 0) {
+            if (position != selection.adapterPosition) {
+                if (DEBUG) {
+                    Log.i(TAG, "截图诊断 选区位置已变 " + describe(view)
+                            + " 选中=" + selection.adapterPosition + " 当前=" + position);
+                }
+                return false;
+            }
+            return true;
+        }
+        String now = signature(view);
+        boolean same = selection.signature == null || selection.signature.isEmpty()
+                || selection.signature.equals(now);
+        if (!same && DEBUG) {
+            Log.i(TAG, "截图诊断 选区签名已变 " + describe(view)
+                    + " old=" + selection.signature + " now=" + now);
+        }
+        return same;
+    }
+
+    /**
+     * 在可见单元里按 adapter position（优先）或内容签名找回被回收的选区。
+     * 找不到说明条目已划出屏幕，只能丢弃并计数。
+     */
+    private Selection recoverSelection(Activity activity, Selection stale) {
+        if (activity == null || stale == null) {
+            return null;
+        }
+        List<ScreenshotUnit> units = visibleUnits(activity);
+        if (stale.adapterPosition >= 0) {
+            for (ScreenshotUnit unit : units) {
+                if (unit.view == null || unit.view == stale.view
+                        || unit.comment != stale.comment) {
+                    continue;
+                }
+                if (adapterPositionOf(unit.view) == stale.adapterPosition) {
+                    return new Selection(unit.view, unit.comment, stale.signature,
+                            stale.adapterPosition);
+                }
+            }
+        }
+        if (stale.signature == null || stale.signature.isEmpty()) {
+            return null;
+        }
+        for (ScreenshotUnit unit : units) {
+            if (unit.view == null || unit.view == stale.view
+                    || unit.comment != stale.comment) {
+                continue;
+            }
+            if (stale.signature.equals(signature(unit.view))) {
+                return new Selection(unit.view, unit.comment, stale.signature,
+                        adapterPositionOf(unit.view));
+            }
+        }
+        return null;
+    }
+
+    /** 取 View 所在 RecyclerView 的 adapter position，取不到返回 -1。 */
+    static int adapterPositionOf(View view) {
+        if (view == null) {
+            return -1;
+        }
+        View child = view;
+        ViewParent parent = view.getParent();
+        int depth = 0;
+        while (parent instanceof View && depth++ < 24) {
+            View current = (View) parent;
+            if (isRecyclerLike(current)) {
+                try {
+                    Method holderMethod = current.getClass()
+                            .getMethod("getChildViewHolder", View.class);
+                    Object holder = holderMethod.invoke(current, child);
+                    if (holder != null) {
+                        Object position = holder.getClass()
+                                .getMethod("getBindingAdapterPosition").invoke(holder);
+                        if (position instanceof Integer) {
+                            return (Integer) position;
+                        }
+                    }
+                } catch (Throwable ignored) {
+                    return -1;
+                }
+                return -1;
+            }
+            child = current;
+            parent = current.getParent();
+        }
+        return -1;
     }
 
     public List<ScreenshotUnit> visibleUnits(Activity activity) {
@@ -617,7 +761,8 @@ public final class ScreenshotSelectionManager {
         }
         if (wantSelected) {
             if (!selected.containsKey(unit.view)) {
-                selected.put(unit.view, new Selection(unit.view, unit.comment, signature(unit.view)));
+                selected.put(unit.view, new Selection(unit.view, unit.comment,
+                        signature(unit.view), adapterPositionOf(unit.view)));
                 applyHighlight(unit.view, true);
                 notifyCount();
             }

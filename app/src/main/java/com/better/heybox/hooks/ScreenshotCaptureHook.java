@@ -14,17 +14,20 @@ import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.better.heybox.App;
+import com.better.heybox.HeyboxPrefs;
 import com.better.heybox.MainModule;
 import com.better.heybox.ThemeUtils;
 import com.better.heybox.util.ScreenshotCleanupHelper;
@@ -45,6 +48,9 @@ public final class ScreenshotCaptureHook {
 
     private static final String TAG = "BetterHeybox";
     private static final long POLL_INTERVAL_MS = 1200L;
+
+    private static final long RESUME_SETTLE_MS = 260L;
+    private static final long UI_ANIM_MS = 140L;
     private static final int ACCENT = 0xFF3B82F6;
     private static final String SAVED_TEXT = "已保存到相册 Pictures/Heybox";
     private static final String COMMENT_SAVED_TEXT = "单条评论截图已保存到相册 Pictures/Heybox";
@@ -65,6 +71,7 @@ public final class ScreenshotCaptureHook {
     private TextView postChip;
     private boolean polling;
     private boolean idsLogged;
+    private long entrySuspendedUntil;
 
     private boolean capturing;
 
@@ -108,7 +115,20 @@ public final class ScreenshotCaptureHook {
             Object self = chain.getThisObject();
             if (self instanceof Activity) {
                 final Activity activity = (Activity) self;
-                mainHandler.post(() -> refreshFor(activity));
+
+                mainHandler.post(() -> {
+                    try {
+                        View decor = activity.getWindow() == null ? null
+                                : activity.getWindow().getDecorView();
+                        if (decor != null) {
+                            decor.postOnAnimation(() -> refreshFor(activity));
+                        } else {
+                            refreshFor(activity);
+                        }
+                    } catch (Throwable throwable) {
+                        module.logd(Log.DEBUG, TAG, "截图入口延迟刷新失败: " + throwable);
+                    }
+                });
             }
             return result;
         });
@@ -121,6 +141,25 @@ public final class ScreenshotCaptureHook {
             }
             return chain.proceed();
         });
+
+        try {
+            Method onBackPressed = Activity.class.getDeclaredMethod("onBackPressed");
+            module.hook(onBackPressed).intercept(chain -> {
+                Object self = chain.getThisObject();
+                if (self instanceof Activity) {
+                    Activity activity = (Activity) self;
+                    if (resumedActivity.get() == activity
+                            && ScreenshotSelectionManager.get().isActive()) {
+                        module.logd(Log.INFO, TAG, "截图模式拦截 BACK，退出选择模式");
+                        ScreenshotSelectionManager.get().exit();
+                        return null;
+                    }
+                }
+                return chain.proceed();
+            });
+        } catch (Throwable throwable) {
+            module.logd(Log.WARN, TAG, "截图 BACK 拦截安装失败: " + throwable);
+        }
 
         Method dispatch = Activity.class.getDeclaredMethod("dispatchTouchEvent", MotionEvent.class);
         module.hook(dispatch).intercept(chain -> {
@@ -163,6 +202,7 @@ public final class ScreenshotCaptureHook {
         resumedActivity = new WeakReference<>(activity);
         verifyIdsOnce(activity);
         polling = true;
+        entrySuspendedUntil = SystemClock.uptimeMillis() + RESUME_SETTLE_MS;
         mainHandler.removeCallbacks(pollRunnable);
         mainHandler.post(pollRunnable);
     }
@@ -171,6 +211,12 @@ public final class ScreenshotCaptureHook {
         @Override
         public void run() {
             if (!polling) {
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (now < entrySuspendedUntil) {
+
+                mainHandler.postDelayed(this, Math.min(80L, entrySuspendedUntil - now));
                 return;
             }
             Activity activity = resumedActivity.get();
@@ -315,6 +361,7 @@ public final class ScreenshotCaptureHook {
             content.addView(button, params);
             entryButton = button;
             ScreenshotSelectionManager.get().ignore(button);
+            animateIn(button, ThemeUtils.dp(context, 10), 0.92f);
         } catch (Throwable throwable) {
             module.logd(Log.DEBUG, TAG, "截图入口按钮添加失败: " + throwable);
         }
@@ -326,9 +373,7 @@ public final class ScreenshotCaptureHook {
         if (button != null) {
             ScreenshotSelectionManager.get().unignore(button);
         }
-        if (button != null && button.getParent() instanceof ViewGroup) {
-            ((ViewGroup) button.getParent()).removeView(button);
-        }
+        animateOut(button);
     }
 
     public void enterSelectionMode(Activity activity) {
@@ -373,7 +418,7 @@ public final class ScreenshotCaptureHook {
         if (content == null) {
             return;
         }
-        removeActionBar();
+        detachActionBar();
         Context context = activity;
         boolean dark = ThemeUtils.isDarkMode(context);
         int surface = dark ? 0xFF232327 : 0xFFFFFFFF;
@@ -446,6 +491,7 @@ public final class ScreenshotCaptureHook {
             content.addView(bar, params);
             actionBar = bar;
             ScreenshotSelectionManager.get().ignore(bar);
+            animateIn(bar, ThemeUtils.dp(context, 16), 1f);
             module.logd(Log.INFO, TAG, "截图工具条已显示");
         } catch (Throwable throwable) {
             module.logd(Log.DEBUG, TAG, "截图工具条添加失败: " + throwable);
@@ -475,16 +521,70 @@ public final class ScreenshotCaptureHook {
     }
 
     private void removeActionBar() {
-        LinearLayout bar = actionBar;
+        View bar = actionBar;
         actionBar = null;
         countView = null;
         postChip = null;
         if (bar != null) {
             ScreenshotSelectionManager.get().unignore(bar);
         }
-        if (bar != null && bar.getParent() instanceof ViewGroup) {
-            ((ViewGroup) bar.getParent()).removeView(bar);
+        animateOut(bar);
+    }
+
+    private void detachActionBar() {
+        View bar = actionBar;
+        actionBar = null;
+        countView = null;
+        postChip = null;
+        if (bar != null) {
+            ScreenshotSelectionManager.get().unignore(bar);
+            detach(bar);
         }
+    }
+    private void animateIn(View view, int offsetPx, float endAlpha) {
+        if (view == null) {
+            return;
+        }
+        view.setAlpha(0f);
+        view.setTranslationY(offsetPx);
+        view.animate().alpha(endAlpha).translationY(0f).setDuration(UI_ANIM_MS).start();
+    }
+
+    private void animateOut(final View view) {
+        if (view == null) {
+            return;
+        }
+        if (!(view.getParent() instanceof ViewGroup)) {
+            return;
+        }
+        view.animate().alpha(0f)
+                .translationY(ThemeUtils.dp(view.getContext(), 8))
+                .setDuration(UI_ANIM_MS)
+                .withEndAction(() -> detach(view))
+                .start();
+        mainHandler.postDelayed(() -> detach(view), UI_ANIM_MS + 120L);
+    }
+
+    private void detach(View view) {
+        if (view == null) {
+            return;
+        }
+        view.animate().cancel();
+        if (view.getParent() instanceof ViewGroup) {
+            ((ViewGroup) view.getParent()).removeView(view);
+        }
+    }
+
+    private static boolean isMostlyOnScreen(View view) {
+        if (view == null || view.getWidth() <= 0 || view.getHeight() <= 0) {
+            return false;
+        }
+        Rect visible = new Rect();
+        if (!view.getGlobalVisibleRect(visible)) {
+            return false;
+        }
+        long area = (long) view.getWidth() * view.getHeight();
+        return (long) visible.width() * visible.height() * 2 >= area;
     }
 
     private TextView newChip(Context context, String label, int textColor) {
@@ -525,6 +625,17 @@ public final class ScreenshotCaptureHook {
         for (ScreenshotSelectionManager.Selection selection : selections) {
             units.add(selection.view);
         }
+        if (manager.isDebug()) {
+            for (int i = 0; i < selections.size(); i++) {
+                ScreenshotSelectionManager.Selection selection = selections.get(i);
+                View unit = selection.view;
+                android.util.Log.i("BetterHeybox", "截图诊断 选择[" + i + "] pos="
+                        + selection.adapterPosition + " w=" + unit.getWidth()
+                        + " h=" + unit.getHeight() + " 在窗口内=" + isMostlyOnScreen(unit));
+            }
+            android.util.Log.i("BetterHeybox", "截图诊断 选择汇总 选中=" + wanted
+                    + " 有效=" + selections.size());
+        }
         manager.exit();
 
         final ScreenshotRenderer.FoldedText folded = ScreenshotRenderer.expandFoldedTexts(units);
@@ -564,7 +675,8 @@ public final class ScreenshotCaptureHook {
                     return;
                 }
                 if (wanted > units.size()) {
-                    toast(activity, "有 " + (wanted - units.size()) + " 项已划出屏幕，未包含在截图中");
+                    toast(activity, "已选择 " + wanted + " 项，其中 " + (wanted - units.size())
+                            + " 项已划出屏幕，未包含在截图中");
                 }
                 saveAndShare(activity.getApplicationContext(), image, share, SOURCE_SELECTION);
             }
@@ -598,6 +710,10 @@ public final class ScreenshotCaptureHook {
         }
         final View unit = units.get(index);
         final ScreenshotCleanupHelper cleanup = new ScreenshotCleanupHelper();
+        android.util.Log.i("BetterHeybox", "截图诊断 截图路径 单元=" + unit.getClass().getName()
+                + " WebView=" + ScreenshotSelectionManager.isWebView(unit)
+                + " w=" + unit.getWidth() + " h=" + unit.getHeight()
+                + " 屏幕内=" + isMostlyOnScreen(unit));
 
         final int[] originalBounds = new int[] {
                 unit.getLeft(), unit.getTop(), unit.getRight(), unit.getBottom()
@@ -689,18 +805,29 @@ public final class ScreenshotCaptureHook {
 
     private void saveAndShare(final Context context, final Bitmap image, final boolean share,
             final int source) {
+
+        final boolean shareNoSave = HeyboxPrefs.getBoolean(App.KEY_SCREENSHOT_SHARE_NO_SAVE, true);
         new Thread(new Runnable() {
             @Override
             public void run() {
                 Uri result = null;
                 boolean fellBackToGallery = false;
+                boolean fellBackToCache = false;
                 String failure = null;
                 try {
                     if (share) {
-                        result = ScreenshotExporter.prepareShareScreenshot(image, context);
-                        if (result == null) {
-                            fellBackToGallery = true;
+                        if (shareNoSave) {
+                            result = ScreenshotExporter.prepareShareScreenshot(image, context);
+                            if (result == null) {
+                                fellBackToGallery = true;
+                                result = ScreenshotExporter.saveScreenshot(image, context);
+                            }
+                        } else {
                             result = ScreenshotExporter.saveScreenshot(image, context);
+                            if (result == null) {
+                                fellBackToCache = true;
+                                result = ScreenshotExporter.prepareShareScreenshot(image, context);
+                            }
                         }
                     } else {
                         result = ScreenshotExporter.saveScreenshot(image, context);
@@ -710,6 +837,7 @@ public final class ScreenshotCaptureHook {
                 }
                 final Uri uri = result;
                 final boolean fellBack = fellBackToGallery;
+                final boolean cacheFallback = fellBackToCache;
                 final String error = failure;
                 mainHandler.post(new Runnable() {
                     @Override
@@ -724,8 +852,13 @@ public final class ScreenshotCaptureHook {
                             if (fellBack) {
                                 module.logd(Log.WARN, TAG,
                                         "FileProvider 不可用，已回退相册并分享: " + uri);
-                            } else {
+                            } else if (cacheFallback) {
+                                module.logd(Log.WARN, TAG,
+                                        "相册保存失败，已回退缓存临时文件并分享: " + uri);
+                            } else if (shareNoSave) {
                                 module.logd(Log.INFO, TAG, "分享截图使用缓存临时文件: " + uri);
+                            } else {
+                                module.logd(Log.INFO, TAG, "分享截图已保存到相册: " + uri);
                             }
                             try {
                                 ScreenshotExporter.shareScreenshot(context, uri);
@@ -894,5 +1027,4 @@ public final class ScreenshotCaptureHook {
         }
     }
 }
-
 
