@@ -21,6 +21,7 @@ captures/
 
 # Temp
 analysis/
+_apk_analysis/
 .tools/
 docs/
 hbcap/
@@ -35,7 +36,7 @@ keystore.properties
 *.hprof
 .DS_Store
 Thumbs.db
-.zcode/
+.dsh/
 .opensuilla/
 .tmp_*
 
