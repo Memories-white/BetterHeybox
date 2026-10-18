@@ -27,6 +27,7 @@ import com.better.heybox.hooks.FeedRefreshUndoHook;
 import com.better.heybox.hooks.GameLibraryCleanHook;
 import com.better.heybox.hooks.GeneralHook;
 import com.better.heybox.hooks.ImageCacheDirHook;
+import com.better.heybox.hooks.ImageOriginalHook;
 import com.better.heybox.hooks.ImageShareHook;
 import com.better.heybox.hooks.MessageRedDotHook;
 import com.better.heybox.hooks.MyTaskHook;
@@ -37,6 +38,7 @@ import com.better.heybox.hooks.WatchHook;
 import com.better.heybox.hooks.ScreenshotCaptureHook;
 import com.better.heybox.hooks.SearchPageCleanHook;
 import com.better.heybox.hooks.SettingsEntryHook;
+import com.better.heybox.hooks.SubCommentExpandHook;
 import com.better.heybox.hooks.ShareLinkPurifyHook;
 import com.better.heybox.hooks.SingleColumnFeedHook;
 import com.better.heybox.hooks.TextSelectHook;
@@ -255,9 +257,14 @@ public class MainModule extends XposedModule {
         registerHook("评论过滤", new CommentFilterHook(this)::install, cl,
                 App.KEY_BLOCK_CY_COMMENT, App.KEY_HOST_HIDE_CY, App.KEY_BLOCK_GAME_RELAY,
                 App.KEY_CY_KEEP_FIRST, App.KEY_COMMENT_KEYWORDS);
-        registerHook("图片分享", new ImageShareHook(this)::install, cl, App.KEY_SYSTEM_SHARE);
+        registerHook("图片分享", new ImageShareHook(this)::install, cl,
+                App.KEY_SYSTEM_SHARE, App.KEY_IMAGE_SHARE_NO_SAVE);
         registerHook("图片缓存目录", new ImageCacheDirHook(this)::install, cl,
                 App.KEY_IMAGE_CACHE_DIR);
+        registerHook("大图自动原图", new ImageOriginalHook(this)::install, cl,
+                App.KEY_IMAGE_AUTO_ORIGINAL);
+        registerHook("自动展开回复", new SubCommentExpandHook(this)::install, cl,
+                App.KEY_COMMENT_AUTO_EXPAND);
 
         forceInstallHook(App.KEY_IMAGE_CACHE_DIR);
         registerHook("消息红点", new MessageRedDotHook(this)::install, cl,
@@ -270,7 +277,7 @@ public class MainModule extends XposedModule {
         registerHook("网页 DevTools", new WebViewDevToolsHook(this)::install, cl,
                 App.KEY_WEBVIEW_DEVTOOLS);
         registerHook("截图捕获", new ScreenshotCaptureHook(this)::install, cl,
-                App.KEY_SCREENSHOT_ENABLED);
+                App.KEY_SCREENSHOT_ENABLED, App.KEY_SCREENSHOT_SHARE_NO_SAVE);
         registerHook("目标提示", new TargetHintHook(this)::install, cl);
         registerHook("每日任务", ignored -> {
             dailyTaskHook = new DailyTaskHook(this);
