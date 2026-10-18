@@ -17,7 +17,7 @@ import com.better.heybox.hooks.BottomTabHook;
 import com.better.heybox.hooks.BrowserRedirectHook;
 import com.better.heybox.hooks.CommentCopyHook;
 import com.better.heybox.hooks.CommentFilterHook;
-import com.better.heybox.hooks.CommentScreenshotShareHook;
+import com.better.heybox.hooks.CommentSharePanelHook;
 import com.better.heybox.hooks.LiquidGlassBottomBarHook;
 import com.better.heybox.hooks.DailyTaskHook;
 import com.better.heybox.hooks.FakeUsageAccessHook;
@@ -26,6 +26,7 @@ import com.better.heybox.hooks.FeedBannerHook;
 import com.better.heybox.hooks.FeedRefreshUndoHook;
 import com.better.heybox.hooks.GameLibraryCleanHook;
 import com.better.heybox.hooks.GeneralHook;
+import com.better.heybox.hooks.ImageCacheDirHook;
 import com.better.heybox.hooks.ImageShareHook;
 import com.better.heybox.hooks.MessageRedDotHook;
 import com.better.heybox.hooks.MyTaskHook;
@@ -45,10 +46,6 @@ import com.better.heybox.hooks.WebViewDevToolsHook;
 import com.better.heybox.liquidglass.LiquidGlassHookBridge;
 import com.better.heybox.liquidglass.LiquidGlassInstaller;
 
-/**
- * 模块入口（libxposed Modern API 102）：只负责模块生命周期与 Hook 安装编排。
- * 各 Hook 职责：通用、广告过滤、设置入口+内嵌面板、底部导航、推广贴、文本选择、图片分享
- */
 public class MainModule extends XposedModule {
 
     public static final String TAG = "BetterHeybox";
@@ -56,25 +53,22 @@ public class MainModule extends XposedModule {
     private com.better.heybox.hooks.DailyTaskHook dailyTaskHook;
     private MyTaskHook myTaskHook;
 
-    /** host classloader: needed to install hooks that were skipped at startup */
     private volatile ClassLoader targetClassLoader;
-    /** per-feature install gates (#37: features that are off install nothing at startup) */
+
     private final java.util.List<HookSpec> hookSpecs =
             new java.util.concurrent.CopyOnWriteArrayList<>();
-    /** hooks skipped so far; 0 makes every install path a no-op */
+
     private final java.util.concurrent.atomic.AtomicInteger pendingHookCount =
             new java.util.concurrent.atomic.AtomicInteger();
-    /** must be strongly referenced or SharedPreferences drops the listener */
+
     private SharedPreferences.OnSharedPreferenceChangeListener settingsListener;
 
     public static final String TARGET_PKG = "com.max.xiaoheihe";
 
     public static final Set<String> SUPPORTED_HEYBOX_VERSIONS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                    "1.3.393",
-                    "1.3.394",
-                    "1.3.395",
-                    "1.3.396"
+                    "1.3.396",
+                    "1.3.397"
             )));
 
     @Override
@@ -203,9 +197,9 @@ public class MainModule extends XposedModule {
     private void installHooks(PackageReadyParam param) {
         ClassLoader cl = param.getClassLoader();
         targetClassLoader = cl;
-        // crash evidence first: later install/runtime crashes still leave a trace (#37)
+
         CrashGuard.install();
-        // 结算上一次会话：区分「有 Java 堆栈的崩溃」与 native/ANR/LMK 类无堆栈退出
+
         try {
             SessionGuard.onProcessStart(App.resolveAppContext());
         } catch (Throwable t) {
@@ -219,8 +213,7 @@ public class MainModule extends XposedModule {
         Checkpoint.mark("目标解析: %s", HeyboxTargets.report().replace('\n', ' '));
 
         PostFilterHook postFilter = new PostFilterHook(this);
-        // gated hooks install only while their switch is on (#37): no hooks, no install logs, no traversal
-        // for disabled features. Keys-less hooks (general / settings entry / target hint) stay resident.
+
         registerHook("通用", new GeneralHook(this)::install, cl);
         registerHook("广告过滤", new AdFilterHook(this)::install, cl,
                 App.KEY_OPEN_SCREEN, App.KEY_FEED_AD, App.KEY_BUBBLE_AD, App.KEY_CORNER_AD);
@@ -254,13 +247,19 @@ public class MainModule extends XposedModule {
         registerHook("文本选择", new TextSelectHook(this)::install, cl,
                 App.KEY_COPY_POST, App.KEY_CUSTOM_TEXT_SELECT);
         registerHook("评论自由复制", new CommentCopyHook(this)::install, cl,
-                App.KEY_COMMENT_FREE_COPY, App.KEY_CUSTOM_TEXT_SELECT);
-        registerHook("评论分享截图", new CommentScreenshotShareHook(this)::install, cl,
-                App.KEY_SCREENSHOT_ENABLED);
+                App.KEY_COMMENT_FREE_COPY, App.KEY_CUSTOM_TEXT_SELECT,
+
+                App.KEY_SCREENSHOT_ENABLED, App.KEY_COMMENT_REPLY_PANEL);
+        registerHook("评论分享面板", new CommentSharePanelHook(this)::install, cl,
+                App.KEY_SCREENSHOT_ENABLED, App.KEY_COMMENT_REPLY_PANEL);
         registerHook("评论过滤", new CommentFilterHook(this)::install, cl,
                 App.KEY_BLOCK_CY_COMMENT, App.KEY_HOST_HIDE_CY, App.KEY_BLOCK_GAME_RELAY,
                 App.KEY_CY_KEEP_FIRST, App.KEY_COMMENT_KEYWORDS);
         registerHook("图片分享", new ImageShareHook(this)::install, cl, App.KEY_SYSTEM_SHARE);
+        registerHook("图片缓存目录", new ImageCacheDirHook(this)::install, cl,
+                App.KEY_IMAGE_CACHE_DIR);
+
+        forceInstallHook(App.KEY_IMAGE_CACHE_DIR);
         registerHook("消息红点", new MessageRedDotHook(this)::install, cl,
                 App.KEY_HIDE_MSG_DOT, App.KEY_HIDE_MSG_BADGE);
         registerHook("分享链接净化", new ShareLinkPurifyHook(this)::install, cl,
@@ -288,8 +287,7 @@ public class MainModule extends XposedModule {
         Checkpoint.mark(">>> Hook 安装完成，总耗时 %d ms", SystemClock.elapsedRealtime() - t0);
         logd(Log.INFO, TAG, "Hook 安装流程结束（因开关关闭延迟安装 "
                 + pendingHookCount.get() + " 个）");
-        // 在所有Hook安装完成后，重新安装崩溃处理器，确保它在框架处理器之后
-        // 这样即使LSPosed等框架在我们之后设置了自己的处理器，我们也能覆盖它
+
         CrashGuard.installLate();
         stashRuntimeStatus();
     }
@@ -297,7 +295,6 @@ public class MainModule extends XposedModule {
         void install(ClassLoader cl);
     }
 
-    /** one hook's gate: empty keys = always install; otherwise any switch on installs it */
     private static final class HookSpec {
         final String label;
         final HookInstaller installer;
@@ -323,7 +320,7 @@ public class MainModule extends XposedModule {
     private void registerHook(String label, HookInstaller installer, ClassLoader cl, String... keys) {
         for (HookSpec existing : hookSpecs) {
             if (existing.label.equals(label)) {
-                // duplicate registration (hot reload): ignore, never install a hook twice
+
                 return;
             }
         }
@@ -338,7 +335,6 @@ public class MainModule extends XposedModule {
         }
     }
 
-    /** @return true only when this call installed it (pendingHookCount must not double-count) */
     private synchronized boolean installIfEnabled(HookSpec spec, ClassLoader cl) {
         if (spec.installed || cl == null) {
             return false;
@@ -354,7 +350,6 @@ public class MainModule extends XposedModule {
         return true;
     }
 
-    /** true when any switch is on; defaults come from App.BOOLEAN_DEFAULTS (single source of truth) */
     private boolean isAnySwitchOn(String[] keys) {
         if (keys.length == 0) {
             return true;
@@ -381,15 +376,13 @@ public class MainModule extends XposedModule {
         return !trimmed.isEmpty() && !"0".equals(trimmed);
     }
 
-    /** Called on a settings change: install hooks skipped at startup so a switch takes effect at once (#37). */
     public void onSettingChanged(String key) {
         if (key == null) {
             return;
         }
-        // 远端偏好（LSPosed 面板）改动也要让首页过滤的配置快照立刻重读（#44）。
-        // 本机面板那半边由 HeyboxPrefs.setBoolean/setString 负责。
+
         invalidatePostFilterConfig();
-        // 帖子详情精简已经装好 Hook 时也要重读开关：它是按「当前值」决定隐藏还是还原的（#43）
+
         if (key.startsWith("post_detail_")) {
             com.better.heybox.hooks.PostDetailCleanHook.refresh();
         }
@@ -413,7 +406,6 @@ public class MainModule extends XposedModule {
         }
     }
 
-    /** Panel actions (check now / clear daily flag) need the hook present: install regardless of the switch. */
     public void forceInstallHook(String key) {
         ClassLoader cl = targetClassLoader;
         if (cl == null || key == null) {
@@ -436,7 +428,6 @@ public class MainModule extends XposedModule {
         }
     }
 
-    /** Watch remote pref changes when the framework supports it; callbacks return to the main thread. */
     private void watchSettingsChanges() {
         try {
             SharedPreferences prefs = getRemotePreferences(App.PREFS_GROUP);
@@ -447,8 +438,7 @@ public class MainModule extends XposedModule {
                 if (key == null) {
                     return;
                 }
-                // 不再因 pendingHookCount==0 早退：onSettingChanged 还要给
-                // 「已装好但要重读开关」的功能（帖子详情精简 / 使用情况权限伪装，#43）做热更新。
+
                 try {
                     mainHandler().post(() -> onSettingChanged(key));
                 } catch (Throwable ignored) {
@@ -496,7 +486,7 @@ public class MainModule extends XposedModule {
                 logd(Log.INFO, TAG, "运行状态检查点已写入 RemotePreferences");
             }
         } catch (Throwable t) {
-            // RemotePreferences is read-only on some frameworks: stay quiet, no stack trace
+
             logv(TAG, "运行状态检查点写入失败（框架只读）");
         }
     }
@@ -550,7 +540,6 @@ public class MainModule extends XposedModule {
         return def;
     }
 
-    /** Log switches are read over RemotePreferences; cached for 1s and invalidated on panel writes (#37). */
     private static final long LOG_SWITCH_TTL_MS = 1_000L;
 
     private volatile boolean logSwitchEnabled;
@@ -590,20 +579,14 @@ public class MainModule extends XposedModule {
         log(level, tag, msg, tr);
     }
 
-    /** High-frequency diagnostics: file + logcat only when both log switches are on (#37). */
     public void logv(String tag, String msg) {
         logd(Log.DEBUG, tag, msg);
     }
 
-    /** Called after a panel toggle so the next log call sees the new state. */
     public void invalidateLogSwitches() {
         logSwitchAt = 0L;
     }
 
-    /**
-     * 面板改动过滤设置后调用，让首页过滤的配置快照立刻作废。
-     * 不依赖它也能生效（快照按 {@code CFG_TTL_MS} 自然过期），只是要多等至多 1 秒。
-     */
     public void invalidatePostFilterConfig() {
         PostFilterHook hook = PostFilterHook.get();
         if (hook != null) {
@@ -636,14 +619,13 @@ public class MainModule extends XposedModule {
     }
 
     public void clearDailyTaskAndRetry(android.app.Activity activity) {
-        // clear-today: install the daily-task hook first so the tap is never a no-op
+
         forceInstallHook(App.KEY_DAILY_TASK_ENABLED);
         if (dailyTaskHook != null) {
             dailyTaskHook.clearTodayAndRetry(activity);
         }
     }
 
-    /** 设置页「立即执行」：装上 Hook（即使总开关关着）并跑一轮 */
     public void startMyTaskNow(android.app.Activity activity) {
         forceInstallHook(App.KEY_MY_TASK_ENABLED);
         if (myTaskHook == null) {
@@ -653,7 +635,6 @@ public class MainModule extends XposedModule {
         myTaskHook.runNow(activity);
     }
 
-    /** 设置页「刷新任务状态」：后台拉一次任务列表，结果进缓存报告 */
     public void refreshMyTaskReport(android.app.Activity activity) {
         forceInstallHook(App.KEY_MY_TASK_ENABLED);
         if (myTaskHook != null) {
@@ -661,12 +642,10 @@ public class MainModule extends XposedModule {
         }
     }
 
-    /** 设置页「查看任务状态」：纯缓存，不发请求 */
     public String myTaskReport() {
         return myTaskHook == null ? "我的任务 Hook 尚未安装" : myTaskHook.report();
     }
 
-    /** 设置页「清除今日记录」 */
     public void clearMyTaskToday() {
         forceInstallHook(App.KEY_MY_TASK_ENABLED);
         if (myTaskHook != null) {

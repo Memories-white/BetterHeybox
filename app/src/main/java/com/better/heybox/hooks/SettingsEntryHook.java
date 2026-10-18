@@ -18,8 +18,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
-import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -54,12 +54,12 @@ import com.better.heybox.HeyboxPrefs;
 import com.better.heybox.HeyboxTargets;
 import com.better.heybox.LogExport;
 import com.better.heybox.LogRecorder;
+import com.better.heybox.log.LogWriterStats;
+import com.better.heybox.liquidglass.GlassSettingsSheet;
 import com.better.heybox.ThemeUtils;
 import com.better.heybox.VersionUtils;
 import com.better.heybox.VideoDownloadManager;
-import com.better.heybox.liquidglass.GlassSettingsSheet;
 import com.better.heybox.liquidglass.LiquidGlassInstaller;
-import com.better.heybox.log.LogWriterStats;
 import com.better.heybox.MainModule;
 import com.better.heybox.PreferenceReceiver;
 
@@ -78,6 +78,21 @@ public final class SettingsEntryHook {
 
     private static volatile boolean sLaunchPromptShown;
 
+private void showTargetStatus(Activity activity) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("广告 content_type: ").append(PromoteDetector.contentTypesInfo()).append('\n');
+            sb.append(HeyboxTargets.report());
+            new AlertDialog.Builder(activity)
+                    .setTitle("目标解析状态")
+                    .setMessage(sb.toString())
+                    .setPositiveButton("确定", null)
+                    .show();
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "目标解析状态弹窗失败: " + t);
+        }
+    }
+
     private void hookLaunchPrompt(ClassLoader cl) {
         try {
             Class<?> main = Class.forName("com.max.xiaoheihe.MainActivity", false, cl);
@@ -88,6 +103,7 @@ public final class SettingsEntryHook {
                     Object self = chain.getThisObject();
                     if (self instanceof Activity) {
                         final Activity activity = (Activity) self;
+
                         activity.getWindow().getDecorView().postDelayed(
                                 () -> maybeShowDisclaimer(activity), 1000L);
                     }
@@ -116,8 +132,14 @@ public final class SettingsEntryHook {
     private static PickCallback sPendingPick;
 
     private WeakReference<View> mSettingsPanel;
+    private WeakReference<Activity> mPanelActivity;
+    private Object mBackCallback;
+    private static final float PANEL_SLIDE_RATIO = 0.28f;
+    private float mPanelWidth;
+    private boolean mPanelAnimating;
+    private int mPanelEnterSign;
 
-    enum Action {
+    public enum Action {
         NONE, EDIT_LINK, CLEAR_DAILY, CHANNEL, EXPORT, IMPORT,
         EXPORT_LOG, CLEAR_LOG, VIEW_LOG, RUNTIME_STATUS, TARGET_STATUS, OPEN_WEB, PICK_DIR, RESET_GLASS, CHOOSE_GLASS,GLASS_SHEET,
         TEST_CRASH,
@@ -125,7 +147,9 @@ public final class SettingsEntryHook {
         POST_MIN_LIKE, POST_MIN_COMMENT, POST_MIN_FAVOUR,
         REDIRECT_FORCE, REDIRECT_BLOCK, REDIRECT_TARGET, WEB_LOG, ABOUT,
         WATCH_USERS, WATCH_KEYWORDS, WATCH_IMPORT_FOLLOW, WATCH_TEST_PUSH, WATCH_CHECK,
-        WATCH_DEBUG_PUSH3,WATCH_V2,OPEN_PAGE,
+        WATCH_DEBUG_PUSH3,
+         WATCH_V2,
+         OPEN_PAGE,
         WATCH_TOPICS, WATCH_IMPORT_TOPICS, WATCH_WINDOW, WATCH_INTERVAL, WATCH_SUGGEST_KEYWORDS,
         WATCH_TOPIC_SEARCH,GAME_LIB_TYPES, GAME_LIB_ENTRIES,GAME_LIB_SECTIONS,GAME_LIB_DIAG,
         MESSAGE_BADGE_ENTRIES, MESSAGE_FULL_HIDE_ENTRIES, MESSAGE_BADGE_DIAG,
@@ -134,7 +158,7 @@ public final class SettingsEntryHook {
         MY_TASK_RUN, MY_TASK_REFRESH, MY_TASK_VIEW, MY_TASK_CLEAR
     }
 
-    static class SwitchDef {
+    public static class SwitchDef {
         final String title;
         final String desc;
         final String key;
@@ -166,7 +190,7 @@ public final class SettingsEntryHook {
         }
     }
 
-    static class SettingsGroup {
+    public static class SettingsGroup {
         final String title;
         final SwitchDef[] items;
         SettingsGroup(String title, SwitchDef[] items) {
@@ -215,6 +239,10 @@ public final class SettingsEntryHook {
                     new SwitchDef("自绘制文本选择", "修复选区异常", App.KEY_CUSTOM_TEXT_SELECT, false, false),
                     new SwitchDef("评论区自由复制", "长按菜单的复制可自由选择", App.KEY_COMMENT_FREE_COPY, true, false),
                     new SwitchDef("系统分享图片", "图片长按加入系统分享", App.KEY_SYSTEM_SHARE, true, false),
+            }),
+            new SettingsGroup("评论交互", new SwitchDef[]{
+                    new SwitchDef("回复改长按面板", "单击评论不再弹回复框；长按评论在分享面板点「回复」",
+                            App.KEY_COMMENT_REPLY_PANEL, true, false),
             }),
             new SettingsGroup("搜索页精简", new SwitchDef[]{
                     new SwitchDef("隐藏搜索页横幅", "搜索栏下方横幅推荐",
@@ -392,8 +420,8 @@ public final class SettingsEntryHook {
     }
 
     private static final String TITLE_GENERAL = "通用";
-    private static final String EXPERIMENTAL_HEYBOX_VERSION = "1.3.396";
-    private static final long EXPERIMENTAL_HEYBOX_MIN_CODE = 1134L;
+    private static final String EXPERIMENTAL_HEYBOX_VERSION = "1.3.397";
+    private static final long EXPERIMENTAL_HEYBOX_CODE = 1138L;
 
     private List<SettingsGroup> buildSettingsGroups(Activity activity) {
         List<SettingsGroup> groups = new ArrayList<>();
@@ -405,7 +433,7 @@ public final class SettingsEntryHook {
                 entry(PAGE_UI, "界面与外观",
                         "液态玻璃、底栏隐藏、单列信息流"),
                 entry(PAGE_BROWSE, "浏览与下载",
-                        "解除复制、链接重定向、视频下载、截图功能"),
+                        "解除复制、评论交互、链接重定向、视频下载、截图功能"),
                 entry(PAGE_WATCH, "动态推送",
                         "关注 " + cfg.users.size() + " · 话题 " + cfg.topics.size()
                                 + " · 关键词 " + cfg.keywords.size() + " · 时间窗 "
@@ -424,6 +452,7 @@ public final class SettingsEntryHook {
     private static final String PAGE_COMMON = "common";
 
     private static SwitchDef entry(String pageId, String title, String desc) {
+
         return new SwitchDef(title, desc, null, false, false, true, pageId, Action.OPEN_PAGE);
     }
 
@@ -470,7 +499,7 @@ public final class SettingsEntryHook {
             groups.add(buildBottomTabGroup(activity));
             groups.add(buildMessageRedDotGroup());
             if (VersionUtils.isHeyboxBuildAtLeast(activity, EXPERIMENTAL_HEYBOX_VERSION,
-                    EXPERIMENTAL_HEYBOX_MIN_CODE)) {
+                    EXPERIMENTAL_HEYBOX_CODE)) {
                 groups.add(new SettingsGroup("实验性功能", new SwitchDef[]{
                         new SwitchDef("屏蔽双列信息流",
                                 "信息流恢复为单列",
@@ -481,6 +510,7 @@ public final class SettingsEntryHook {
         }
         if (PAGE_BROWSE.equals(pageId)) {
             addBase(groups, "解除复制");
+            addBase(groups, "评论交互");
             insertBrowserRedirectGroup(activity, groups);
             addBase(groups, "视频下载");
             addBase(groups, "截图功能");
@@ -503,6 +533,7 @@ public final class SettingsEntryHook {
         addBase(groups, "关于");
         return groups;
     }
+
     private static void addBase(List<SettingsGroup> out, String title) {
         for (SettingsGroup g : BASE_GROUPS) {
             if (g.title.equals(title)) {
@@ -512,7 +543,7 @@ public final class SettingsEntryHook {
         }
     }
 
-    private static void appendExtraRows(List<SettingsGroup> out, String title, SwitchDef[] extra) {
+private static void appendExtraRows(List<SettingsGroup> out, String title, SwitchDef[] extra) {
         if (extra == null || extra.length == 0) {
             return;
         }
@@ -525,7 +556,7 @@ public final class SettingsEntryHook {
         }
     }
 
-    private static SettingsGroup withExtraRows(SettingsGroup g, SwitchDef[] extra) {
+private static SettingsGroup withExtraRows(SettingsGroup g, SwitchDef[] extra) {
         if (extra == null || extra.length == 0) {
             return g;
         }
@@ -604,15 +635,15 @@ public final class SettingsEntryHook {
                         null, false, false, true, App.KEY_WATCH_PUSH_CUSTOM),
         }));
 
-        List<SwitchDef> testRows = new ArrayList<>();
-        testRows.add(new SwitchDef("测试提醒", "发送一条测试消息",
-                null, false, false, true, null, Action.WATCH_TEST_PUSH));
-        testRows.add(new SwitchDef("立即检查", "手动检查一次",
-                null, false, false, true, null, Action.WATCH_CHECK));
-        testRows.add(new SwitchDef("调试：推送最近 3 条",
-                "立即推送最近 3 条",
-                null, false, false, true, null, Action.WATCH_DEBUG_PUSH3));
-        groups.add(new SettingsGroup("测试与调试", testRows.toArray(new SwitchDef[0])));
+        groups.add(new SettingsGroup("测试与调试", new SwitchDef[]{
+                new SwitchDef("测试提醒", "发送一条测试消息",
+                        null, false, false, true, null, Action.WATCH_TEST_PUSH),
+                new SwitchDef("立即检查", "手动检查一次",
+                        null, false, false, true, null, Action.WATCH_CHECK),
+                new SwitchDef("调试：推送最近 3 条",
+                        "立即推送最近 3 条（忽略时间窗）",
+                        null, false, false, true, null, Action.WATCH_DEBUG_PUSH3),
+        }));
 
         return groups;
     }
@@ -711,6 +742,7 @@ public final class SettingsEntryHook {
             module.logd(Log.WARN, module.TAG, "设置检查间隔失败: " + t);
         }
     }
+
     private void importWatchTopics(final Activity activity) {
         Toast.makeText(activity, "正在读取关注话题…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
@@ -990,6 +1022,7 @@ public final class SettingsEntryHook {
                         for (String line : set) {
                             sb.append(line).append('\n');
                         }
+
                         boolean ok = HeyboxPrefs.setString(App.KEY_WATCH_USERS, sb.toString());
                         LogRecorder.recordEvent("导入关注列表已写入: added=" + added
                                 + ", total=" + set.size() + ", ok=" + ok);
@@ -1019,8 +1052,10 @@ public final class SettingsEntryHook {
                     "betterheybox-test", "测试消息 · BetterHeybox",
                     "这是一条测试提醒：关注对象发布新动态 / 关键词命中时会这样提示",
                     "0", "BetterHeybox", System.currentTimeMillis() / 1000L, "keyword", "");
+
             final boolean banner = com.better.heybox.watch.WatchOutput.testBanner(activity, item);
             final boolean notify = com.better.heybox.watch.WatchOutput.notifyPost(activity, item);
+
             new Thread(() -> {
                 final String[] msg = new String[1];
                 try {
@@ -1126,61 +1161,6 @@ public final class SettingsEntryHook {
         groups.add(insertAt, group);
     }
 
-    private void insertCommentFilterGroup(List<SettingsGroup> groups) {
-        int kwCount = countConfiguredLines(module.getString(App.KEY_COMMENT_KEYWORDS, ""));
-        SettingsGroup group = new SettingsGroup("评论过滤", new SwitchDef[]{
-                new SwitchDef("屏蔽插眼评论",
-                        "在数据/列表层直接摘掉带 Cy 标的评论",
-                        App.KEY_HOST_HIDE_CY, true, false),
-                new SwitchDef("插眼保留第一条",
-                        "同一评论区里 cy 后面的内容完全一致时只保留第一条",
-                        App.KEY_CY_KEEP_FIRST, false, false),
-                new SwitchDef("评论关键词屏蔽/ 无意义评论",
-                        "关键词屏蔽评论",
-                        App.KEY_BLOCK_CY_COMMENT, false, false),
-                new SwitchDef("评论关键词屏蔽",
-                        kwCount > 0 ? "已配置 " + kwCount + " 个"
-                                : "命中评论正文即屏蔽",
-                        null, false, false, true, null, Action.COMMENT_KEYWORDS),
-                new SwitchDef("屏蔽游戏名接龙",
-                        "屏蔽正文仅为游戏链接的评论",
-                        App.KEY_BLOCK_GAME_RELAY, false, false),
-                new SwitchDef("接龙判定忽略表情",
-                        "[cube_xxx] 不计入残留字数",
-                        App.KEY_RELAY_IGNORE_EMOJI, false, false),
-                new SwitchDef("评论过滤状态",
-                        "查看安装结果与各层命中计数",
-                        null, false, false, true, null, Action.COMMENT_FILTER_DIAG),
-        });
-        int insertAt = groups.size();
-        for (int i = 0; i < groups.size(); i++) {
-            if ("发帖过滤".equals(groups.get(i).title)) {
-                insertAt = i + 1;
-                break;
-            }
-        }
-        groups.add(insertAt, group);
-    }
-
-    private void insertFeedRefreshGroup(List<SettingsGroup> groups) {
-        SettingsGroup group = new SettingsGroup("首页信息流", new SwitchDef[]{
-                new SwitchDef("撤销刷新气泡",
-                        "刷新后显示宿主的「撤销」气泡，点击把刷新前的内容插回列表",
-                        App.KEY_FEED_REFRESH_UNDO, false, false),
-                new SwitchDef("刷新保留上次内容",
-                        "刷新后上一次内容仍在「上次浏览」分隔线下",
-                        App.KEY_FEED_KEEP_PREVIOUS, false, false),
-        });
-        int insertAt = groups.size();
-        for (int i = 0; i < groups.size(); i++) {
-            if ("发帖过滤".equals(groups.get(i).title)) {
-                insertAt = i + 1;
-                break;
-            }
-        }
-        groups.add(insertAt, group);
-    }
-
     private static final String TITLE_SHARE_PURIFY = "分享净化";
 
     private void insertBrowserRedirectGroup(Activity activity, List<SettingsGroup> groups) {
@@ -1245,6 +1225,9 @@ public final class SettingsEntryHook {
             rows.add(new SwitchDef("液态玻璃底栏", "底栏显示液态玻璃", App.KEY_LIQUID_GLASS, true, false));
             rows.add(new SwitchDef("沉浸式小白条", "底栏延伸至手势区域", App.KEY_GLASS_IMMERSIVE, true, false));
             rows.add(new SwitchDef("自适应反色", "文字图标随背景反色", App.KEY_GLASS_ADAPTIVE, true, false));
+            rows.add(new SwitchDef("搜索并入底栏",
+                    "隐藏顶栏 🔍，把搜索入口放到玻璃底栏右端",
+                    App.KEY_GLASS_SEARCH_IN_BAR, false, false));
             rows.add(new SwitchDef("加长选中 Tab",
                     "隐藏标签后选中项加长，底栏随可见数量收缩",
                     App.KEY_GLASS_FIT_TABS, false, false));
@@ -1318,7 +1301,8 @@ public final class SettingsEntryHook {
             module.logd(Log.ERROR, module.TAG, "✘ 设置页入口 Hook 失败", t);
         }
     }
-    private static final String[] SETUP_METHOD_CANDIDATES = {"N1", "L1", "G1", "S1"};
+
+    private static final String[] SETUP_METHOD_CANDIDATES = {"N1", "L1", "G1", "S1", "U1"};
 
     private Method findSetupMethod(Class<?> clazz) {
         for (String name : SETUP_METHOD_CANDIDATES) {
@@ -1465,6 +1449,297 @@ public final class SettingsEntryHook {
             message.setTextColor(textColor);
         }
         return message;
+    }
+
+private String postDetailDiagnostics() {
+        try {
+            return PostDetailCleanHook.diagnostics();
+        } catch (Throwable t) {
+            return "帖子详情精简 Hook 尚未安装，"
+                    + "请打开任意帖子详情页后再查看\n\n" + t;
+        }
+    }
+private String fakeUsageDiagnostics() {
+        try {
+            return FakeUsageAccessHook.diagnostics();
+        } catch (Throwable t) {
+            return "伪装使用情况权限 Hook 尚未安装，"
+                    + "请先打开小黑盒主界面后再查看\n\n" + t;
+        }
+    }
+private void showGameLibDiagnostics(final Activity activity) {
+        showMultilineInfo(activity, "游戏库精简状态", GameLibraryCleanHook.diagnostics());
+    }
+private void showMyTaskAutoWarn(final Activity activity) {
+        try {
+            StringBuilder msg = new StringBuilder();
+            msg.append("模块「发布」，并在任务进度确认后删掉刚发的帖子。\n\n");
+            msg.append("· 自定义短内容，可能被限流、屏蔽甚至处罚\n");
+            msg.append("· 每天最多发条数量\n");
+            new AlertDialog.Builder(activity)
+                    .setTitle("确认开启全自动发帖")
+                    .setMessage(msg.toString())
+                    .setNegativeButton("保持半自动", (d, w) ->
+                            setSwitchPref(activity, App.KEY_MY_TASK_AUTO_POST, false))
+                    .setPositiveButton("我已知晓风险", (d, w) -> {
+                        writeEmbeddedBoolean(activity, App.KEY_MY_TASK_AUTO_WARNED, true);
+                        Toast.makeText(activity, "已开启全自动发帖，请留意模块日志",
+                                Toast.LENGTH_SHORT).show();
+                    })
+                    .show();
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "我的任务风险提示弹窗失败: " + t);
+        }
+    }
+private void showMultilineInfo(Activity activity, String title, String text) {
+        try {
+            TextView content = buildDialogMessage(activity, text);
+            content.setTextIsSelectable(true);
+            ScrollView scroller = new ScrollView(activity);
+            scroller.addView(content);
+            scroller.setLayoutParams(new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 420)));
+            withHeyboxDialog(activity,
+                    spec -> {
+                        spec.buildAndShow(activity, title, scroller, null, null,
+                                "关闭", (d, w) -> d.dismiss());
+                    },
+                    () -> new AlertDialog.Builder(activity)
+                            .setTitle(title)
+                            .setView(scroller)
+                            .setPositiveButton("关闭", null)
+                            .show());
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "诊断弹窗失败: " + t);
+        }
+    }
+private void showGameLibPicker(final Activity activity, final int kind, final String title) {
+        showEntryPicker(activity, title, GameLibraryCleanHook.pickerEntries(kind),
+                kind == GameLibraryCleanHook.PICK_TYPE
+                        ? GameLibraryCleanHook.selectedTypes()
+                        : GameLibraryCleanHook.selectedNames(kind),
+                null,
+                (a, t, picked) -> {
+                    if (kind == GameLibraryCleanHook.PICK_TYPE) {
+                        GameLibraryCleanHook.setSelectedTypes(picked);
+                    } else {
+                        GameLibraryCleanHook.setSelectedNames(kind, picked);
+                    }
+                });
+    }
+private void showMessageEntryPicker(final Activity activity, final int kind, final String title) {
+        String hint = kind == MessageRedDotHook.PICK_FULL
+                ? "勾选的入口整行从消息列表移除；候选来自实际见过的入口行，打开一次消息列表后会列出更多"
+                : "勾选的入口只隐藏右侧红色数字；候选来自实际见过的入口行，打开一次消息列表后会列出更多";
+        showEntryPicker(activity, title, MessageRedDotHook.pickerEntries(kind),
+                MessageRedDotHook.selectedNames(kind), hint,
+                (a, t, picked) -> MessageRedDotHook.setSelectedNames(kind, picked));
+    }
+private void showPostCountDialog(final Activity activity, final String title, final String key) {
+        final int checked = thresholdIndex(module.getString(key, "0"));
+        withHeyboxDialog(activity, spec -> {
+            LinearLayout list = buildOptionRowList(activity, POST_COUNT_LABELS, checked);
+            Dialog dialog = spec.buildAndShow(activity, title, list, null, null,
+                    "取消", (d, w) -> d.dismiss());
+            bindOptionRows(dialog, list, index -> {
+                HeyboxPrefs.setString(key, POST_COUNT_VALUES[index]);
+                LogRecorder.recordEvent(title + "已设置: " + POST_COUNT_VALUES[index]);
+                refreshEmbeddedPanel(activity);
+            });
+        }, () -> showSingleChoiceFallback(activity, title, POST_COUNT_LABELS,
+                checked, index -> {
+                    HeyboxPrefs.setString(key, POST_COUNT_VALUES[index]);
+                    refreshEmbeddedPanel(activity);
+                }));
+    }
+private void showPostTagsDialog(Activity activity) {
+        showMultilineEditDialog(activity, "屏蔽话题/标签", App.KEY_POST_TAGS,
+                "一行一个，话题名直接写、不必带 #；命中帖子话题 / 内容标签 / #话题# 即屏蔽；regex: 前缀为正则", false);
+    }
+private void showCommentKeywordsDialog(Activity activity) {
+        showMultilineEditDialog(activity, "评论关键词", App.KEY_COMMENT_KEYWORDS,
+                "一行一个，命中评论正文即屏蔽；regex: 前缀为正则", false);
+    }
+
+
+
+    private static final String[] POST_COUNT_VALUES = {
+            "0", "1", "5", "10", "20", "50", "100", "200", "500", "1000"};
+    private static final String[] POST_COUNT_LABELS = {
+            "关闭", "1", "5", "10", "20", "50", "100", "200", "500", "1000"};
+
+    private interface PickSaver {
+        void save(Activity activity, String title, Set<String> picked);
+    }
+
+    private void insertCommentFilterGroup(List<SettingsGroup> groups) {
+        int kwCount = countConfiguredLines(module.getString(App.KEY_COMMENT_KEYWORDS, ""));
+        SettingsGroup group = new SettingsGroup("评论过滤", new SwitchDef[]{
+                new SwitchDef("屏蔽插眼评论",
+                        "在数据/列表层直接摘掉带 Cy 标的评论",
+                        App.KEY_HOST_HIDE_CY, true, false),
+                new SwitchDef("插眼保留第一条",
+                        "同一评论区里 cy 后面的内容完全一致时只保留第一条",
+                        App.KEY_CY_KEEP_FIRST, false, false),
+                new SwitchDef("评论关键词屏蔽/ 无意义评论",
+                        "关键词屏蔽评论",
+                        App.KEY_BLOCK_CY_COMMENT, false, false),
+                new SwitchDef("评论关键词屏蔽",
+                        kwCount > 0 ? "已配置 " + kwCount + " 个"
+                                : "命中评论正文即屏蔽",
+                        null, false, false, true, null, Action.COMMENT_KEYWORDS),
+                new SwitchDef("屏蔽游戏名接龙",
+                        "屏蔽正文仅为游戏链接的评论",
+                        App.KEY_BLOCK_GAME_RELAY, false, false),
+                new SwitchDef("接龙判定忽略表情",
+                        "[cube_xxx] 不计入残留字数",
+                        App.KEY_RELAY_IGNORE_EMOJI, false, false),
+                new SwitchDef("评论过滤状态",
+                        "查看安装结果与各层命中计数",
+                        null, false, false, true, null, Action.COMMENT_FILTER_DIAG),
+        });
+        int insertAt = groups.size();
+        for (int i = 0; i < groups.size(); i++) {
+            if ("发帖过滤".equals(groups.get(i).title)) {
+                insertAt = i + 1;
+                break;
+            }
+        }
+        groups.add(insertAt, group);
+    }
+
+    private void insertFeedRefreshGroup(List<SettingsGroup> groups) {
+        SettingsGroup group = new SettingsGroup("首页信息流", new SwitchDef[]{
+                new SwitchDef("撤销刷新气泡",
+                        "刷新后显示宿主的「撤销」气泡，点击把刷新前的内容插回列表",
+                        App.KEY_FEED_REFRESH_UNDO, false, false),
+                new SwitchDef("刷新保留上次内容",
+                        "刷新后上一次内容仍在「上次浏览」分隔线下",
+                        App.KEY_FEED_KEEP_PREVIOUS, false, false),
+        });
+        int insertAt = groups.size();
+        for (int i = 0; i < groups.size(); i++) {
+            if ("发帖过滤".equals(groups.get(i).title)) {
+                insertAt = i + 1;
+                break;
+            }
+        }
+        groups.add(insertAt, group);
+    }
+
+    private int currentThreshold(String key) {
+        try {
+            return Integer.parseInt(module.getString(key, "0").trim());
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private static int thresholdIndex(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        for (int i = 0; i < POST_COUNT_VALUES.length; i++) {
+            if (POST_COUNT_VALUES[i].equals(value)) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    private void savePickedEntries(Activity activity, String title, List<CheckBox> boxes,
+                                   PickSaver saver) {
+        Set<String> picked = new LinkedHashSet<>();
+        for (CheckBox box : boxes) {
+            if (box.isChecked() && box.getTag() != null) {
+                picked.add(String.valueOf(box.getTag()));
+            }
+        }
+        saver.save(activity, title, picked);
+        LogRecorder.recordEvent(title + "已保存: " + picked.size() + " 项");
+        Toast.makeText(activity, picked.isEmpty()
+                        ? "已清空「" + title + "」" : "已保存 " + picked.size() + " 项，立即生效",
+                Toast.LENGTH_SHORT).show();
+        refreshEmbeddedPanel(activity);
+    }
+
+    private void showEntryPicker(final Activity activity, final String title,
+                                 final List<String[]> entries, final Set<String> selected,
+                                 final String hint, final PickSaver saver) {
+        withHeyboxDialog(activity,
+                spec -> showEntryPickerNative(activity, title, entries, selected, hint, saver, spec),
+                () -> showEntryPickerFallback(activity, title, entries, selected, hint, saver));
+    }
+
+    private void showEntryPickerNative(final Activity activity, String title,
+                                       List<String[]> entries, Set<String> selected, String hint,
+                                       PickSaver saver, DexKitResolver.HeyboxDialogSpec spec)
+            throws Exception {
+        List<CheckBox> boxes = new ArrayList<>();
+        ScrollView content = buildCheckListPicker(activity, entries, selected, hint, boxes);
+        spec.buildAndShow(activity, title, content, "保存",
+                (d, w) -> {
+                    savePickedEntries(activity, title, boxes, saver);
+                    d.dismiss();
+                },
+                "取消", (d, w) -> d.dismiss());
+    }
+
+    private void showEntryPickerFallback(final Activity activity, String title,
+                                         List<String[]> entries, Set<String> selected, String hint,
+                                         PickSaver saver) {
+        try {
+            List<CheckBox> boxes = new ArrayList<>();
+            ScrollView content = buildCheckListPicker(activity, entries, selected, hint, boxes);
+            new AlertDialog.Builder(activity)
+                    .setTitle(title)
+                    .setView(content)
+                    .setPositiveButton("保存", (d, w) -> savePickedEntries(activity, title, boxes, saver))
+                    .setNegativeButton("取消", null)
+                    .show();
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, title + "弹窗失败: " + t);
+        }
+    }
+
+    private ScrollView buildCheckListPicker(Activity activity, List<String[]> entries,
+                                            Set<String> selected, String hint,
+                                            List<CheckBox> boxesOut) {
+        LinearLayout column = new LinearLayout(activity);
+        column.setOrientation(LinearLayout.VERTICAL);
+        int pad = module.dp(activity, 8);
+        column.setPadding(pad, pad, pad, pad);
+        int textColor = hostColor(activity, "color_text_primary_day_night", 0);
+        if (hint != null && !hint.isEmpty()) {
+            TextView tip = new TextView(activity);
+            tip.setText(hint);
+            tip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            tip.setPadding(0, 0, 0, module.dp(activity, 6));
+            int tipColor = hostColor(activity, "color_text_tertiary_day_night", 0);
+            if (tipColor != 0) {
+                tip.setTextColor(tipColor);
+            }
+            column.addView(tip, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        for (String[] entry : entries) {
+            String value = entry[0];
+            String label = entry.length > 1 ? entry[1] : null;
+            CheckBox box = new CheckBox(activity);
+            box.setText(label == null || label.isEmpty() ? value : value + "  " + label);
+            box.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            box.setChecked(selected != null && selected.contains(value));
+            if (textColor != 0) {
+                box.setTextColor(textColor);
+            }
+            box.setTag(value);
+            column.addView(box, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            boxesOut.add(box);
+        }
+        ScrollView scroller = new ScrollView(activity);
+        scroller.addView(column);
+        scroller.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 400)));
+        return scroller;
     }
 
     private void withHeyboxDialog(Activity activity, NativeDialogCall nativeCall, Runnable fallback) {
@@ -2009,7 +2284,102 @@ public final class SettingsEntryHook {
         showEmbeddedSettings(activity);
     }
 
-    private void attachEmbeddedPanel(Activity activity, FrameLayout overlay, final Runnable onBack) {
+    private void registerPanelBackCallback(final Activity activity, final Runnable onBack) {
+        unregisterPanelBackCallback();
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 33) {
+                return;
+            }
+            android.window.OnBackInvokedDispatcher dispatcher = activity.getOnBackInvokedDispatcher();
+            if (dispatcher == null) {
+                return;
+            }
+            final Runnable cancel = () -> {
+                if (onBack != null) {
+                    onBack.run();
+                } else {
+                    dismissEmbeddedSettings();
+                }
+            };
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                final android.window.OnBackAnimationCallback callback =
+                        new android.window.OnBackAnimationCallback() {
+                            @Override
+                            public void onBackStarted(android.window.BackEvent backEvent) {
+                                mPanelAnimating = false;
+                            }
+
+                            @Override
+                            public void onBackProgressed(android.window.BackEvent backEvent) {
+                                View panel = mSettingsPanel == null ? null : mSettingsPanel.get();
+                                if (panel == null || mPanelAnimating) {
+                                    return;
+                                }
+                                View page = ((ViewGroup) panel).getChildCount() > 0
+                                        ? ((ViewGroup) panel).getChildAt(0) : panel;
+                                float progress = Math.max(0f, Math.min(1f, backEvent.getProgress()));
+                                page.setTranslationX((int) (mPanelWidth * PANEL_SLIDE_RATIO
+                                        + mPanelWidth * 0.72f * progress));
+                                panel.setAlpha(1f - 0.12f * progress);
+                            }
+
+                            @Override
+                            public void onBackCancelled() {
+                                View panel = mSettingsPanel == null ? null : mSettingsPanel.get();
+                                if (panel == null) {
+                                    return;
+                                }
+                                View page = ((ViewGroup) panel).getChildCount() > 0
+                                        ? ((ViewGroup) panel).getChildAt(0) : panel;
+                                mPanelAnimating = true;
+                                page.animate().translationX(0f).setDuration(200L)
+                                        .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                                        .withEndAction(() -> mPanelAnimating = false)
+                                        .start();
+                                panel.animate().alpha(1f).setDuration(200L).start();
+                            }
+
+                            @Override
+                            public void onBackInvoked() {
+                                cancel.run();
+                            }
+                        };
+                dispatcher.registerOnBackInvokedCallback(
+                        android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+                mBackCallback = callback;
+            } else {
+                android.window.OnBackInvokedCallback callback = cancel::run;
+                dispatcher.registerOnBackInvokedCallback(
+                        android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+                mBackCallback = callback;
+            }
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "注册预见式返回失败: " + t);
+        }
+    }
+
+    private void unregisterPanelBackCallback() {
+        Object callback = mBackCallback;
+        mBackCallback = null;
+        if (callback == null) {
+            return;
+        }
+        try {
+            Activity activity = mPanelActivity == null ? null : mPanelActivity.get();
+            if (activity == null) {
+                return;
+            }
+            android.window.OnBackInvokedDispatcher dispatcher = activity.getOnBackInvokedDispatcher();
+            if (dispatcher == null) {
+                return;
+            }
+            dispatcher.unregisterOnBackInvokedCallback(
+                    (android.window.OnBackInvokedCallback) callback);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void attachEmbeddedPanel(final Activity activity, FrameLayout overlay, final Runnable onBack) {
         overlay.setOnKeyListener(new View.OnKeyListener() {
             @Override
             public boolean onKey(View v, int keyCode, KeyEvent event) {
@@ -2028,18 +2398,77 @@ public final class SettingsEntryHook {
         decor.addView(overlay);
         overlay.requestFocus();
         mSettingsPanel = new WeakReference<View>(overlay);
+        final View page = overlay.getChildCount() > 0 ? overlay.getChildAt(0) : overlay;
+        mPanelActivity = new WeakReference<>(activity);
+        try {
+            int width = page.getWidth() > 0 ? page.getWidth()
+                    : activity.getResources().getDisplayMetrics().widthPixels;
+            mPanelWidth = width;
+            final int distance = (int) (width * PANEL_SLIDE_RATIO) * (mPanelEnterSign >= 0 ? 1 : -1);
+            mPanelEnterSign = 1;
+            page.setTranslationX(distance);
+            page.animate().translationX(0f).setDuration(260L)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                    .setUpdateListener(animation -> mPanelAnimating = true)
+                    .withEndAction(() -> mPanelAnimating = false)
+                    .start();
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "内嵌面板进入动画失败: " + t);
+        }
+        registerPanelBackCallback(activity, onBack);
         module.logd(Log.INFO, module.TAG, "✔ 原生子页面设置面板已叠加到小黑盒窗口");
     }
 
     private void dismissEmbeddedSettings() {
+        dismissEmbeddedSettings(true);
+    }
+
+    private void dismissEmbeddedSettings(boolean animated) {
+        final View panel;
+        final ViewGroup parent;
         try {
-            View panel = mSettingsPanel == null ? null : mSettingsPanel.get();
-            if (panel != null && panel.getParent() != null) {
-                ((ViewGroup) panel.getParent()).removeView(panel);
+            panel = mSettingsPanel == null ? null : mSettingsPanel.get();
+            if (panel == null || !(panel.getParent() instanceof ViewGroup)) {
+                mSettingsPanel = null;
+                unregisterPanelBackCallback();
+                return;
             }
-        } catch (Throwable ignored) {
+            parent = (ViewGroup) panel.getParent();
+        } catch (Throwable t) {
+            mSettingsPanel = null;
+            unregisterPanelBackCallback();
+            return;
         }
         mSettingsPanel = null;
+        unregisterPanelBackCallback();
+        if (!animated) {
+            try {
+                parent.removeView(panel);
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
+        try {
+            final View page = ((ViewGroup) panel).getChildCount() > 0
+                    ? ((ViewGroup) panel).getChildAt(0) : panel;
+            final int width = (int) (mPanelWidth > 0 ? mPanelWidth
+                    : panel.getResources().getDisplayMetrics().widthPixels);
+            final int distance = (int) (width * (mPanelEnterSign >= 0 ? 1f : 0.4f));
+            panel.setClickable(false);
+            page.animate().translationX(distance).setDuration(260L)
+                    .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
+                    .withEndAction(() -> {
+                        try {
+                            parent.removeView(panel);
+                        } catch (Throwable ignored) {
+                        }
+                    }).start();
+        } catch (Throwable t) {
+            try {
+                parent.removeView(panel);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private View buildSectionCard(Activity activity, ClassLoader cl, SettingsGroup group) {
@@ -2099,6 +2528,7 @@ public final class SettingsEntryHook {
 
             itemCls.getMethod("setTitle", String.class).invoke(item, def.title);
             if (def.desc != null) {
+
                 itemCls.getMethod("setTitleDesc", String.class).invoke(item, def.desc);
                 Method descToggle = resolveDescToggle(itemCls, activity);
                 if (descToggle != null) {
@@ -2166,11 +2596,11 @@ public final class SettingsEntryHook {
                     case CHOOSE_GLASS:
                         setRowClick(itemCls, item, v -> showGlassProviderDialog(activity));
                         break;
-                    case GLASS_SHEET:
-                        setRowClick(itemCls, item, v -> GlassSettingsSheet.show(activity));
-                        break;
                     case POST_LEVEL:
                         setRowClick(itemCls, item, v -> showPostLevelDialog(activity));
+                        break;
+                    case GLASS_SHEET:
+                        setRowClick(itemCls, item, v -> GlassSettingsSheet.show(activity));
                         break;
                     case POST_MIN_LIKE:
                         setRowClick(itemCls, item, v -> showPostCountDialog(activity,
@@ -2183,9 +2613,6 @@ public final class SettingsEntryHook {
                     case POST_MIN_FAVOUR:
                         setRowClick(itemCls, item, v -> showPostCountDialog(activity,
                                 "屏蔽低收藏帖子", App.KEY_POST_MIN_FAVOUR));
-                        break;
-                    case POST_KEYWORDS:
-                        setRowClick(itemCls, item, v -> showPostKeywordsDialog(activity));
                         break;
                     case POST_TAGS:
                         setRowClick(itemCls, item, v -> showPostTagsDialog(activity));
@@ -2208,6 +2635,9 @@ public final class SettingsEntryHook {
                     case GAME_LIB_SECTIONS:
                         setRowClick(itemCls, item, v -> showGameLibPicker(activity,
                                 GameLibraryCleanHook.PICK_SECTION, "隐藏指定推荐分区"));
+                        break;
+                    case POST_KEYWORDS:
+                        setRowClick(itemCls, item, v -> showPostKeywordsDialog(activity));
                         break;
                     case GAME_LIB_DIAG:
                         setRowClick(itemCls, item, v -> showGameLibDiagnostics(activity));
@@ -2387,43 +2817,17 @@ public final class SettingsEntryHook {
                         if (writeEmbeddedBoolean(activity, def.key, isChecked) && def.restart) {
                             showRestartAppDialog(activity, cl);
                         }
+
                         if (App.KEY_CUSTOM_TEXT_SELECT.equals(def.key)
                                 || App.KEY_COPY_POST.equals(def.key)) {
                             TextSelectHook.refresh();
                         }
-                        if (App.KEY_COMMENT_FREE_COPY.equals(def.key)) {
-                            CommentCopyHook.refresh();
-                        }
-                        if (App.KEY_SEARCH_HIDE_BANNER.equals(def.key)
-                                || App.KEY_SEARCH_HIDE_DISCOVER.equals(def.key)
-                                || App.KEY_SEARCH_HIDE_HOT_RANK.equals(def.key)) {
-                            SearchPageCleanHook.refresh();
-                        }
-                        if (App.KEY_GAME_LIB_HIDE_BANNER.equals(def.key)
-                                || App.KEY_GAME_LIB_HIDE_MENU.equals(def.key)
-                                || App.KEY_GAME_LIB_HIDE_SECTIONS.equals(def.key)) {
-                            GameLibraryCleanHook.refresh();
-                        }
-                        if (App.KEY_POST_DETAIL_CLEAN.equals(def.key)
-                                || App.KEY_POST_DETAIL_TOPIC_NO_CLICK.equals(def.key)
-                                || App.KEY_POST_DETAIL_TOPIC_HIDE.equals(def.key)
-                                || App.KEY_POST_DETAIL_HIDE_IDS.equals(def.key)) {
-                            PostDetailCleanHook.refresh();
-                        }
-                        if (App.KEY_FAKE_USAGE_ACCESS.equals(def.key)
-                                || App.KEY_FAKE_USAGE_EMPTY_DATA.equals(def.key)) {
-                            FakeUsageAccessHook.refresh();
-                        }
-                        if (App.KEY_HIDE_MSG_DOT.equals(def.key)
-                                || App.KEY_HIDE_MSG_BADGE.equals(def.key)) {
-                            MessageRedDotHook.refresh();
-                        }
+
                         if (App.KEY_LIQUID_GLASS.equals(def.key)) {
                             LiquidGlassInstaller.applyGlassEnabled(activity);
                         }
-                        if (App.KEY_GLASS_IMMERSIVE.equals(def.key)
-                                || App.KEY_GLASS_ADAPTIVE.equals(def.key)
-                                || App.KEY_GLASS_FIT_TABS.equals(def.key)) {
+
+                        if (App.KEY_GLASS_IMMERSIVE.equals(def.key)) {
                             LiquidGlassInstaller.refreshGlassWith(activity);
                         }
                         if (App.KEY_DEBUG_NO_DOWNGRADE.equals(def.key)) {
@@ -2436,10 +2840,6 @@ public final class SettingsEntryHook {
                                 Toast.makeText(activity, "版本降级限制将在下次启动重新生效",
                                         Toast.LENGTH_SHORT).show();
                             }
-                        }
-                        if (App.KEY_MY_TASK_AUTO_POST.equals(def.key) && isChecked
-                                && !readEmbeddedBoolean(App.KEY_MY_TASK_AUTO_WARNED, false)) {
-                            showMyTaskAutoWarn(activity);
                         }
                         if (!mutexApplying) {
                             applySwitchMutex(activity, def.key, isChecked);
@@ -2459,6 +2859,7 @@ public final class SettingsEntryHook {
             return null;
         }
     }
+
     private final java.util.HashMap<String, WeakReference<Object>> sSwitchItems = new java.util.HashMap<>();
 
     private void registerSwitchItem(String key, Object item) {
@@ -2510,6 +2911,7 @@ public final class SettingsEntryHook {
         Object item = ref == null ? null : ref.get();
         if (item != null) {
             try {
+
                 item.getClass().getMethod("setChecked", boolean.class, boolean.class)
                         .invoke(item, value, false);
             } catch (Throwable t) {
@@ -2598,6 +3000,7 @@ public final class SettingsEntryHook {
         }
         return list;
     }
+
     private interface OptionPick {
         void pick(int index);
     }
@@ -2783,256 +3186,14 @@ public final class SettingsEntryHook {
         }
     }
 
-    private static final String[] POST_COUNT_VALUES = {
-            "0", "1", "5", "10", "20", "50", "100", "200", "500", "1000"};
-    private static final String[] POST_COUNT_LABELS = {
-            "关闭", "1", "5", "10", "20", "50", "100", "200", "500", "1000"};
-
-    private int currentThreshold(String key) {
-        try {
-            return Integer.parseInt(module.getString(key, "0").trim());
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    private static int thresholdIndex(String raw) {
-        String value = raw == null ? "" : raw.trim();
-        for (int i = 0; i < POST_COUNT_VALUES.length; i++) {
-            if (POST_COUNT_VALUES[i].equals(value)) {
-                return i;
-            }
-        }
-        return 0;
-    }
-
-    private void showPostCountDialog(final Activity activity, final String title, final String key) {
-        final int checked = thresholdIndex(module.getString(key, "0"));
-        withHeyboxDialog(activity, spec -> {
-            LinearLayout list = buildOptionRowList(activity, POST_COUNT_LABELS, checked);
-            Dialog dialog = spec.buildAndShow(activity, title, list, null, null,
-                    "取消", (d, w) -> d.dismiss());
-            bindOptionRows(dialog, list, index -> {
-                HeyboxPrefs.setString(key, POST_COUNT_VALUES[index]);
-                LogRecorder.recordEvent(title + "已设置: " + POST_COUNT_VALUES[index]);
-                refreshEmbeddedPanel(activity);
-            });
-        }, () -> showSingleChoiceFallback(activity, title, POST_COUNT_LABELS,
-                checked, index -> {
-                    HeyboxPrefs.setString(key, POST_COUNT_VALUES[index]);
-                    refreshEmbeddedPanel(activity);
-                }));
-    }
-
     private void showPostKeywordsDialog(Activity activity) {
         showMultilineEditDialog(activity, "屏蔽关键词", App.KEY_POST_KEYWORDS,
                 "一行一个，命中标题或正文即屏蔽；regex: 前缀为正则", false);
     }
 
-    private void showPostTagsDialog(Activity activity) {
-        showMultilineEditDialog(activity, "屏蔽话题/标签", App.KEY_POST_TAGS,
-                "一行一个，话题名直接写、不必带 #；命中帖子话题 / 内容标签 / #话题# 即屏蔽；regex: 前缀为正则", false);
-    }
-
-    private void showCommentKeywordsDialog(Activity activity) {
-        showMultilineEditDialog(activity, "评论关键词", App.KEY_COMMENT_KEYWORDS,
-                "一行一个，命中评论正文即屏蔽；regex: 前缀为正则", false);
-    }
-
     private void showAiPromptDialog(Activity activity) {
         showMultilineEditDialog(activity, "判定提示词", App.KEY_AI_PROMPT,
                 "留空使用内置默认提示词", true);
-    }
-
-    private void showGameLibDiagnostics(final Activity activity) {
-        showMultilineInfo(activity, "游戏库精简状态", GameLibraryCleanHook.diagnostics());
-    }
-
-    private String postDetailDiagnostics() {
-        try {
-            return PostDetailCleanHook.diagnostics();
-        } catch (Throwable t) {
-            return "帖子详情精简 Hook 尚未安装，"
-                    + "请打开任意帖子详情页后再查看\n\n" + t;
-        }
-    }
-
-    private String fakeUsageDiagnostics() {
-        try {
-            return FakeUsageAccessHook.diagnostics();
-        } catch (Throwable t) {
-            return "伪装使用情况权限 Hook 尚未安装，"
-                    + "请先打开小黑盒主界面后再查看\n\n" + t;
-        }
-    }
-
-    private void showMyTaskAutoWarn(final Activity activity) {
-        try {
-            StringBuilder msg = new StringBuilder();
-            msg.append("模块「发布」，并在任务进度确认后删掉刚发的帖子。\n\n");
-            msg.append("· 自定义短内容，可能被限流、屏蔽甚至处罚\n");
-            msg.append("· 每天最多发条数量\n");
-            new AlertDialog.Builder(activity)
-                    .setTitle("确认开启全自动发帖")
-                    .setMessage(msg.toString())
-                    .setNegativeButton("保持半自动", (d, w) ->
-                            setSwitchPref(activity, App.KEY_MY_TASK_AUTO_POST, false))
-                    .setPositiveButton("我已知晓风险", (d, w) -> {
-                        writeEmbeddedBoolean(activity, App.KEY_MY_TASK_AUTO_WARNED, true);
-                        Toast.makeText(activity, "已开启全自动发帖，请留意模块日志",
-                                Toast.LENGTH_SHORT).show();
-                    })
-                    .show();
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "我的任务风险提示弹窗失败: " + t);
-        }
-    }
-    private void showMultilineInfo(Activity activity, String title, String text) {
-        try {
-            TextView content = buildDialogMessage(activity, text);
-            content.setTextIsSelectable(true);
-            ScrollView scroller = new ScrollView(activity);
-            scroller.addView(content);
-            scroller.setLayoutParams(new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 420)));
-            withHeyboxDialog(activity,
-                    spec -> {
-                        spec.buildAndShow(activity, title, scroller, null, null,
-                                "关闭", (d, w) -> d.dismiss());
-                    },
-                    () -> new AlertDialog.Builder(activity)
-                            .setTitle(title)
-                            .setView(scroller)
-                            .setPositiveButton("关闭", null)
-                            .show());
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "诊断弹窗失败: " + t);
-        }
-    }
-
-    private void showGameLibPicker(final Activity activity, final int kind, final String title) {
-        showEntryPicker(activity, title, GameLibraryCleanHook.pickerEntries(kind),
-                kind == GameLibraryCleanHook.PICK_TYPE
-                        ? GameLibraryCleanHook.selectedTypes()
-                        : GameLibraryCleanHook.selectedNames(kind),
-                null,
-                (a, t, picked) -> {
-                    if (kind == GameLibraryCleanHook.PICK_TYPE) {
-                        GameLibraryCleanHook.setSelectedTypes(picked);
-                    } else {
-                        GameLibraryCleanHook.setSelectedNames(kind, picked);
-                    }
-                });
-    }
-
-    private void showMessageEntryPicker(final Activity activity, final int kind, final String title) {
-        String hint = kind == MessageRedDotHook.PICK_FULL
-                ? "勾选的入口整行从消息列表移除；候选来自实际见过的入口行，打开一次消息列表后会列出更多"
-                : "勾选的入口只隐藏右侧红色数字；候选来自实际见过的入口行，打开一次消息列表后会列出更多";
-        showEntryPicker(activity, title, MessageRedDotHook.pickerEntries(kind),
-                MessageRedDotHook.selectedNames(kind), hint,
-                (a, t, picked) -> MessageRedDotHook.setSelectedNames(kind, picked));
-    }
-
-    private interface PickSaver {
-        void save(Activity activity, String title, Set<String> picked);
-    }
-
-    private void showEntryPicker(final Activity activity, final String title,
-                                 final List<String[]> entries, final Set<String> selected,
-                                 final String hint, final PickSaver saver) {
-        withHeyboxDialog(activity,
-                spec -> showEntryPickerNative(activity, title, entries, selected, hint, saver, spec),
-                () -> showEntryPickerFallback(activity, title, entries, selected, hint, saver));
-    }
-
-    private void showEntryPickerNative(final Activity activity, String title,
-                                       List<String[]> entries, Set<String> selected, String hint,
-                                       PickSaver saver, DexKitResolver.HeyboxDialogSpec spec)
-            throws Exception {
-        List<CheckBox> boxes = new ArrayList<>();
-        ScrollView content = buildCheckListPicker(activity, entries, selected, hint, boxes);
-        spec.buildAndShow(activity, title, content, "保存",
-                (d, w) -> {
-                    savePickedEntries(activity, title, boxes, saver);
-                    d.dismiss();
-                },
-                "取消", (d, w) -> d.dismiss());
-    }
-
-    private void showEntryPickerFallback(final Activity activity, String title,
-                                         List<String[]> entries, Set<String> selected, String hint,
-                                         PickSaver saver) {
-        try {
-            List<CheckBox> boxes = new ArrayList<>();
-            ScrollView content = buildCheckListPicker(activity, entries, selected, hint, boxes);
-            new AlertDialog.Builder(activity)
-                    .setTitle(title)
-                    .setView(content)
-                    .setPositiveButton("保存", (d, w) -> savePickedEntries(activity, title, boxes, saver))
-                    .setNegativeButton("取消", null)
-                    .show();
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, title + "弹窗失败: " + t);
-        }
-    }
-
-    private ScrollView buildCheckListPicker(Activity activity, List<String[]> entries,
-                                            Set<String> selected, String hint,
-                                            List<CheckBox> boxesOut) {
-        LinearLayout column = new LinearLayout(activity);
-        column.setOrientation(LinearLayout.VERTICAL);
-        int pad = module.dp(activity, 8);
-        column.setPadding(pad, pad, pad, pad);
-        int textColor = hostColor(activity, "color_text_primary_day_night", 0);
-        if (hint != null && !hint.isEmpty()) {
-            TextView tip = new TextView(activity);
-            tip.setText(hint);
-            tip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            tip.setPadding(0, 0, 0, module.dp(activity, 6));
-            int tipColor = hostColor(activity, "color_text_tertiary_day_night", 0);
-            if (tipColor != 0) {
-                tip.setTextColor(tipColor);
-            }
-            column.addView(tip, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-        for (String[] entry : entries) {
-            String value = entry[0];
-            String label = entry.length > 1 ? entry[1] : null;
-            CheckBox box = new CheckBox(activity);
-            box.setText(label == null || label.isEmpty() ? value : value + "  " + label);
-            box.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            box.setChecked(selected != null && selected.contains(value));
-            if (textColor != 0) {
-                box.setTextColor(textColor);
-            }
-            box.setTag(value);
-            column.addView(box, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            boxesOut.add(box);
-        }
-        ScrollView scroller = new ScrollView(activity);
-        scroller.addView(column);
-        scroller.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 400)));
-        return scroller;
-    }
-
-    private void savePickedEntries(Activity activity, String title, List<CheckBox> boxes,
-                                   PickSaver saver) {
-        Set<String> picked = new LinkedHashSet<>();
-        for (CheckBox box : boxes) {
-            if (box.isChecked() && box.getTag() != null) {
-                picked.add(String.valueOf(box.getTag()));
-            }
-        }
-        saver.save(activity, title, picked);
-        LogRecorder.recordEvent(title + "已保存: " + picked.size() + " 项");
-        Toast.makeText(activity, picked.isEmpty()
-                        ? "已清空「" + title + "」" : "已保存 " + picked.size() + " 项，立即生效",
-                Toast.LENGTH_SHORT).show();
-        refreshEmbeddedPanel(activity);
     }
 
     private void showMultilineEditDialog(Activity activity, String title, String key,
@@ -3122,7 +3283,7 @@ public final class SettingsEntryHook {
 
     private void saveMultiline(Activity activity, String key, String raw, String title) {
         String normalized;
-        if (App.KEY_POST_KEYWORDS.equals(key) || App.KEY_POST_TAGS.equals(key)) {
+        if (App.KEY_POST_KEYWORDS.equals(key)) {
             StringBuilder sb = new StringBuilder();
             for (String line : raw.split("\n")) {
                 String k = line.trim();
@@ -3160,42 +3321,10 @@ public final class SettingsEntryHook {
                 }
             }
             normalized = sb.toString();
-        } else if (App.KEY_SCREENSHOT_HIDE_CUSTOM.equals(key)) {
-            StringBuilder sb = new StringBuilder();
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            for (String token : raw.split("[\\n,，;；]+")) {
-                String item = token.trim();
-                if (!item.isEmpty() && seen.add(item)) {
-                    if (sb.length() > 0) {
-                        sb.append('\n');
-                    }
-                    sb.append(item);
-                }
-            }
-            normalized = sb.toString();
-        } else if (App.KEY_POST_DETAIL_HIDE_IDS.equals(key)) {
-            StringBuilder sb = new StringBuilder();
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            for (String token : raw.split("[\\s,，;；]+")) {
-                String name = token.trim();
-                if (!name.isEmpty() && seen.add(name)) {
-                    if (sb.length() > 0) {
-                        sb.append('\n');
-                    }
-                    sb.append(name);
-                }
-            }
-            normalized = sb.toString();
         } else {
             normalized = raw.trim();
         }
         HeyboxPrefs.setString(key, normalized);
-        if (App.KEY_COMMENT_KEYWORDS.equals(key)) {
-            CommentFilterHook.refresh();
-        }
-        if (App.KEY_POST_DETAIL_HIDE_IDS.equals(key)) {
-            PostDetailCleanHook.refresh();
-        }
         LogRecorder.recordEvent(title + " 已保存");
         Toast.makeText(activity, "已保存，立即生效", Toast.LENGTH_SHORT).show();
         refreshEmbeddedPanel(activity);
@@ -3299,6 +3428,7 @@ public final class SettingsEntryHook {
     private void showDisclaimerNative(final Activity activity,
                                       DexKitResolver.HeyboxDialogSpec spec) throws Exception {
         TextView message = buildDialogMessage(activity, DISCLAIMER_TEXT);
+
         Dialog dialog = spec.buildAndShow(activity, "免责声明", message, "同意并继续",
                 (d, w) -> {
                     d.dismiss();
@@ -3500,6 +3630,27 @@ public final class SettingsEntryHook {
         }
     }
 
+    private void confirmTestCrash(final Activity activity) {
+        try {
+            new AlertDialog.Builder(activity)
+                    .setTitle("触发测试崩溃")
+                    .setMessage("将在主线程抛出一个未捕获异常，宿主进程会立即崩溃退出。"
+                            + "用于验证。确定继续？")
+                    .setPositiveButton("触发崩溃", (d, w) -> {
+                        d.dismiss();
+                        Toast.makeText(activity, "3 秒后触发测试崩溃…", Toast.LENGTH_SHORT).show();
+                        activity.getWindow().getDecorView().postDelayed(() -> {
+                            throw new RuntimeException(
+                                    "BetterHeybox 测试崩溃");
+                        }, 3000L);
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "触发测试崩溃弹窗失败: " + t);
+        }
+    }
+
     private void resetLiquidGlassSettings(Activity activity) {
         HeyboxPrefs.setBoolean(App.KEY_LIQUID_GLASS, true);
         HeyboxPrefs.setBoolean(App.KEY_GLASS_IMMERSIVE, true);
@@ -3522,6 +3673,19 @@ public final class SettingsEntryHook {
         Toast.makeText(activity, "液态玻璃设置已恢复默认", Toast.LENGTH_SHORT).show();
         View panel = mSettingsPanel == null ? null : mSettingsPanel.get();
         if (panel != null && panel.getParent() != null) showEmbeddedSettings(activity);
+    }
+    private void maybeRefreshGlassRuntime(Activity activity, String key) {
+        if (key == null || activity == null) {
+            return;
+        }
+        if (!App.KEY_LIQUID_GLASS.equals(key) && !key.startsWith("glass_")) {
+            return;
+        }
+        try {
+            LiquidGlassInstaller.refreshGlassWith(activity);
+        } catch (Throwable t) {
+            module.logd(Log.WARN, module.TAG, "玻璃设置运行时刷新失败: " + key, t);
+        }
     }
     private void showEditLinkDialog(final Activity activity, final String title, final String key) {
         withHeyboxDialog(activity, spec -> showEditLinkDialogNative(activity, title, key, spec),
@@ -3555,7 +3719,6 @@ public final class SettingsEntryHook {
         DialogInterface.OnClickListener saveListener = (d, w) -> {
             try {
                 HeyboxPrefs.setString(key, input.getText().toString().trim());
-                maybeRefreshGlassRuntime(activity, key);
                 Toast.makeText(activity, "已保存", Toast.LENGTH_SHORT).show();
                 module.logd(Log.INFO, module.TAG, "分享链接已保存: " + key);
             } catch (Throwable t) {
@@ -3581,7 +3744,6 @@ public final class SettingsEntryHook {
                     .setPositiveButton("保存", (dialog, which) -> {
                         try {
                             HeyboxPrefs.setString(key, input.getText().toString().trim());
-                            maybeRefreshGlassRuntime(activity, key);
                             Toast.makeText(activity, "已保存", Toast.LENGTH_SHORT).show();
                             module.logd(Log.INFO, module.TAG, "分享链接已保存: " + key);
                         } catch (Throwable t) {
@@ -3617,6 +3779,7 @@ public final class SettingsEntryHook {
 
     private void startEmbeddedExport(final Activity activity) {
         try {
+
             String json = ConfigBackup.buildJson(module::isEnabled, module::getString);
             if (json == null) {
                 Toast.makeText(activity, "导出失败，请重试", Toast.LENGTH_SHORT).show();
@@ -3731,6 +3894,7 @@ public final class SettingsEntryHook {
         box.addView(copyRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         box.addView(buildWebLogText(activity));
+
         scroller.addView(box, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         scroller.setLayoutParams(new ViewGroup.LayoutParams(
@@ -4016,42 +4180,6 @@ public final class SettingsEntryHook {
         }
     }
 
-    private void confirmTestCrash(final Activity activity) {
-        try {
-            new AlertDialog.Builder(activity)
-                    .setTitle("触发测试崩溃")
-                    .setMessage("将在主线程抛出一个未捕获异常，宿主进程会立即崩溃退出。"
-                            + "用于验证。确定继续？")
-                    .setPositiveButton("触发崩溃", (d, w) -> {
-                        d.dismiss();
-                        Toast.makeText(activity, "3 秒后触发测试崩溃…", Toast.LENGTH_SHORT).show();
-                        activity.getWindow().getDecorView().postDelayed(() -> {
-                            throw new RuntimeException(
-                                    "BetterHeybox 测试崩溃");
-                        }, 3000L);
-                    })
-                    .setNegativeButton("取消", null)
-                    .show();
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "触发测试崩溃弹窗失败: " + t);
-        }
-    }
-
-    private void showTargetStatus(Activity activity) {
-        try {
-            StringBuilder sb = new StringBuilder();
-            sb.append("广告 content_type: ").append(PromoteDetector.contentTypesInfo()).append('\n');
-            sb.append(HeyboxTargets.report());
-            new AlertDialog.Builder(activity)
-                    .setTitle("目标解析状态")
-                    .setMessage(sb.toString())
-                    .setPositiveButton("确定", null)
-                    .show();
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "目标解析状态弹窗失败: " + t);
-        }
-    }
-
     private void startEmbeddedImport(final Activity activity) {
         withHeyboxDialog(activity, spec -> startEmbeddedImportNative(activity, spec),
                 () -> showEmbeddedImportConfirmFallback(activity));
@@ -4152,27 +4280,11 @@ public final class SettingsEntryHook {
         return "com.better.heybox";
     }
 
-    private void maybeRefreshGlassRuntime(Activity activity, String key) {
-        if (key == null || activity == null) {
-            return;
-        }
-        if (!App.KEY_LIQUID_GLASS.equals(key) && !key.startsWith("glass_")) {
-            return;
-        }
-        try {
-            LiquidGlassInstaller.refreshGlassWith(activity);
-        } catch (Throwable t) {
-            module.logd(Log.WARN, module.TAG, "玻璃设置运行时刷新失败: " + key, t);
-        }
-    }
-
     private boolean writeEmbeddedBoolean(Activity activity, String key, boolean value) {
         LogRecorder.setContext(activity);
         HeyboxPrefs.init(activity);
         boolean localOk = HeyboxPrefs.setBoolean(key, value);
-        // drop the log-switch cache so a verbose-log toggle applies on the next call (#37)
         module.invalidateLogSwitches();
-        // install hooks skipped at startup: enabling a switch takes effect without a restart (#37)
         module.onSettingChanged(key);
         LogRecorder.recordEvent("内嵌面板开关已写入小黑盒本地配置: key=" + key
                 + ", value=" + value + ", ok=" + localOk);
@@ -4187,16 +4299,12 @@ public final class SettingsEntryHook {
         } catch (Throwable t) {
             module.logd(Log.WARN, module.TAG, "远程镜像广播失败（本地配置已生效，不影响使用）: " + key, t);
         }
+
         if (App.KEY_CUSTOM_TEXT_SELECT.equals(key) || App.KEY_COPY_POST.equals(key)) {
             TextSelectHook.refresh();
         }
-        if (App.KEY_BLOCK_CY_COMMENT.equals(key) || App.KEY_HOST_HIDE_CY.equals(key)
-                || App.KEY_BLOCK_GAME_RELAY.equals(key) || App.KEY_CY_KEEP_FIRST.equals(key)) {
-            CommentFilterHook.refresh();
-        }
         return localOk;
     }
-
 
     public static int hostResId(Context context, String name, String type, int fallback) {
         try {
@@ -4206,6 +4314,7 @@ public final class SettingsEntryHook {
             return fallback;
         }
     }
+
     public static int hostColor(Context context, String name, int fallback) {
         int id = hostResId(context, name, "color", 0);
         if (id != 0) {
