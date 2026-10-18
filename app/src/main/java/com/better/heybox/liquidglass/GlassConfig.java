@@ -23,6 +23,9 @@ final class GlassConfig {
     private static final int DEFAULT_TAB_WIDTH_PCT = 100;
     private static final int DEFAULT_BAR_LAYOUT = 0;
 
+    private static final int DEFAULT_TAB_SELECT_COLOR = 0xFFF2F2F2;
+    private static final int DEFAULT_TAB_SELECT_ALPHA = 16;
+
     static volatile int darkColor = DEFAULT_DARK_COLOR;
     static volatile int darkAlphaPct = DEFAULT_DARK_ALPHA;
     static volatile int lightColor = DEFAULT_LIGHT_COLOR;
@@ -32,16 +35,21 @@ final class GlassConfig {
     static volatile boolean fitTabs = DEFAULT_FIT_TABS;
     static volatile int barHeightDp = DEFAULT_BAR_HEIGHT;
     static volatile int barOffsetDp = DEFAULT_BAR_OFFSET;
-    /** Glass bar side inset in dp, honored by every width mode; 0 = edge to edge. */
+
     static volatile int barSideMarginDp = DEFAULT_SIDE_MARGIN;
-    /** 玻璃条宽度：0=自适应（按 tab 内容取宽并居中）1=占满 2=自定义百分比 */
+
     static volatile int barWidthMode = DEFAULT_BAR_WIDTH_MODE;
-    /** Custom width: percent of the usable width (side insets excluded), 40-100. */
+
     static volatile int barWidthPct = DEFAULT_BAR_WIDTH_PCT;
-    /** tab 项宽度缩放，等分默认值的百分比（50-150） */
+
     static volatile int tabWidthPct = DEFAULT_TAB_WIDTH_PCT;
-    /** 底栏形态：0=自动（tab 奇数→右侧圆钮）1=经典居中加号 2=右侧圆钮 */
+
     static volatile int barLayoutMode = DEFAULT_BAR_LAYOUT;
+
+    static volatile int tabSelectColor = DEFAULT_TAB_SELECT_COLOR;
+    static volatile int tabSelectAlphaPct = DEFAULT_TAB_SELECT_ALPHA;
+
+    static volatile String tabOrder = "";
 
     private GlassConfig() {
     }
@@ -52,6 +60,14 @@ final class GlassConfig {
 
     static int lightTint() {
         return compose(lightColor, lightAlphaPct);
+    }
+
+    static boolean tabSelectFollowConfig() {
+        return false;
+    }
+
+    static int tabSelectTint() {
+        return compose(tabSelectColor, tabSelectAlphaPct);
     }
 
     private static int compose(int rgb, int pct) {
@@ -77,6 +93,12 @@ final class GlassConfig {
             barWidthPct = parseInt(HeyboxPrefs.getString(App.KEY_GLASS_BAR_WIDTH_PCT, null), barWidthPct);
             tabWidthPct = parseInt(HeyboxPrefs.getString(App.KEY_GLASS_TAB_WIDTH_PCT, null), tabWidthPct);
             barLayoutMode = parseInt(HeyboxPrefs.getString(App.KEY_GLASS_BAR_LAYOUT, null), barLayoutMode);
+            tabSelectColor = parseColor(HeyboxPrefs.getString(App.KEY_GLASS_TAB_SELECT_COLOR, null),
+                    tabSelectColor);
+            tabSelectAlphaPct = parseInt(
+                    HeyboxPrefs.getString(App.KEY_GLASS_TAB_SELECT_ALPHA, null), tabSelectAlphaPct);
+            String order = HeyboxPrefs.getString(App.KEY_GLASS_TAB_ORDER, null);
+            tabOrder = order == null ? "" : order.trim();
         } catch (Throwable t) {
             LiquidGlassLog.logErr("config load failed", t);
         }
@@ -99,6 +121,9 @@ final class GlassConfig {
             HeyboxPrefs.setString(App.KEY_GLASS_BAR_WIDTH_PCT, String.valueOf(barWidthPct));
             HeyboxPrefs.setString(App.KEY_GLASS_TAB_WIDTH_PCT, String.valueOf(tabWidthPct));
             HeyboxPrefs.setString(App.KEY_GLASS_BAR_LAYOUT, String.valueOf(barLayoutMode));
+            HeyboxPrefs.setString(App.KEY_GLASS_TAB_SELECT_COLOR, formatColor(tabSelectColor));
+            HeyboxPrefs.setString(App.KEY_GLASS_TAB_SELECT_ALPHA, String.valueOf(tabSelectAlphaPct));
+            HeyboxPrefs.setString(App.KEY_GLASS_TAB_ORDER, tabOrder == null ? "" : tabOrder);
         } catch (Throwable t) {
             LiquidGlassLog.logErr("config save failed", t);
         }
@@ -119,6 +144,9 @@ final class GlassConfig {
         barWidthPct = DEFAULT_BAR_WIDTH_PCT;
         tabWidthPct = DEFAULT_TAB_WIDTH_PCT;
         barLayoutMode = DEFAULT_BAR_LAYOUT;
+        tabSelectColor = DEFAULT_TAB_SELECT_COLOR;
+        tabSelectAlphaPct = DEFAULT_TAB_SELECT_ALPHA;
+        tabOrder = "";
     }
 
     private static int parseColor(String raw, int fallback) {

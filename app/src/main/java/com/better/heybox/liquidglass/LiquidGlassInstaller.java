@@ -56,7 +56,6 @@ public final class LiquidGlassInstaller {
         }
     }
 
-    /** 重新断言窗口级小白条沉浸（宿主 onResume 可能重设导航栏颜色，需覆盖回去） */
     static void applyImmersive(Activity activity) {
         try {
             GlassConfig.load(activity);
@@ -65,7 +64,6 @@ public final class LiquidGlassInstaller {
         }
     }
 
-    /** 底栏只存在于 MainActivity；设置入口运行在宿主设置页，操作必须落到这个引用上 */
     private static volatile java.lang.ref.WeakReference<Activity> sMainRef;
 
     private static Activity mainActivity() {
@@ -74,10 +72,6 @@ public final class LiquidGlassInstaller {
         return main != null && !main.isFinishing() && !main.isDestroyed() ? main : null;
     }
 
-    /**
-     * 切换液态玻璃开关后立即生效：开=安装玻璃，关=卸载玻璃恢复经典底栏。
-     * 沉浸式小白条独立于玻璃开关，两条路径都会按配置应用/还原
-     */
     public static void applyGlassEnabled(Activity activity) {
         try {
             if (GlassProvider.prefersHbmod(activity)) {
@@ -132,7 +126,10 @@ public final class LiquidGlassInstaller {
                     return;
                 }
                 if (root.findViewWithTag(LiquidGlassHostLayout.GLASS_TAG) != null) {
-                    // 已安装：onResume / 底栏回调重入，无需重复安装
+                    View bar = sTabBarRef.get();
+                    if (bar instanceof com.example.liquidglass.LiquidGlassTabBar) {
+                        rebuildTabBar((com.example.liquidglass.LiquidGlassTabBar) bar);
+                    }
                     return;
                 }
                 install(activity, root);
@@ -142,7 +139,6 @@ public final class LiquidGlassInstaller {
         });
     }
 
-    /** 安装前宿主底栏原始状态，运行时卸载玻璃按此还原 */
     private static final class BarSnapshot {
         int barIndex = -1;
         int tipsIndex = -1;
@@ -157,10 +153,9 @@ public final class LiquidGlassInstaller {
     }
 
     private static volatile BarSnapshot sSnapshot;
-    /** 递增使旧的 500ms 轮询自行终止，避免卸载后继续驱动玻璃逻辑 */
+
     private static volatile int sSyncGen;
 
-    /** 运行时卸载玻璃底栏并把宿主原始底栏装回原位（关闭液态玻璃免重启） */
     private static void uninstallGlass(Activity activity) {
         try {
             ViewGroup root = findViewByName(activity, ID_ROOT);
@@ -170,7 +165,7 @@ public final class LiquidGlassInstaller {
             BarSnapshot snap = sSnapshot;
             sSyncGen++;
             cancelGlassAnimators();
-            // 摘视图要在 host 还挂在窗口树上时做，findViewById 才找得到
+
             ViewGroup bar = findViewByName(activity, ID_BAR);
             ViewGroup tips = findViewByName(activity, ID_TIPS);
             View midTab = findViewByName(activity, ID_MID_TAB);
@@ -188,15 +183,14 @@ public final class LiquidGlassInstaller {
                 snap.legacyShadow.setVisibility(View.VISIBLE);
             }
             View host = root.findViewWithTag(LiquidGlassHostLayout.GLASS_TAG);
-            // 必须先把三件套从 host / center 包装里摘除，否则 addView 会因
-            // "child already has a parent" 抛异常，底栏就永远装不回去了
+
             removeFromParent(bar);
             removeFromParent(tips);
             removeFromParent(midTab);
             if (host != null) {
                 root.removeView(host);
             }
-            // 按原始索引升序装回：宿主其余子视图都在原相对位置，直接用原索引即可还原 z 序
+
             if (bar != null && snap != null) {
                 bar.setBackground(snap.barBackground);
                 bar.setPadding(snap.barPadLeft, snap.barPadTop,
@@ -262,6 +256,10 @@ public final class LiquidGlassInstaller {
         sBuildSig = "";
         sSyncing = false;
         sVisibleButtons.clear();
+        sSearchTabIndex = -1;
+        sAppliedOrder.clear();
+        restoreHiddenSearchIcons();
+        invalidateSearchIconCache();
         sBasePadBottom = 0;
         sInstallPadBottom = 0;
         sNavPad = 0;
@@ -269,16 +267,11 @@ public final class LiquidGlassInstaller {
         resetWidthAnimState();
     }
 
-    /** 经典底栏沉浸基线（rg_main 原高/原内边距、加号原下边距） */
     private static int sClassicBarHeight = -1;
     private static int sClassicBarPadBottom = -1;
     private static int sClassicMidMargin = -1;
     private static volatile boolean sClassicImmersive;
 
-    /**
-     * 无玻璃时的沉浸式小白条：窗口级透明由 apply() 负责，这里把 rg_main 加高
-     * navPad 并同步内边距，让底栏背景延伸进手势区而内容仍避开小白条
-     */
     private static void applyClassicImmersive(final Activity activity) {
         applyClassicImmersive(activity, 0);
     }
@@ -370,10 +363,6 @@ public final class LiquidGlassInstaller {
         sClassicImmersive = false;
     }
 
-    /**
-     * 与玻璃路径不同：不扣 decor 底部空隙——apply() 已声明 LAYOUT_HIDE_NAVIGATION，
-     * decor 即将延伸到屏幕底，直接按导航栏 inset 取值
-     */
     private static int computeClassicNavPad(ViewGroup root) {
         try {
             WindowInsets wi = root.getRootWindowInsets();
@@ -397,7 +386,7 @@ public final class LiquidGlassInstaller {
         if (root.findViewWithTag(LiquidGlassHostLayout.GLASS_TAG) != null) {
             return;
         }
-        // 卸载会递增代数：回调/重试与卸载竞态时以代数判废
+
         final int gen = sSyncGen;
         ViewGroup bar = findViewByName(activity, ID_BAR);
         if (bar == null || bar.getParent() != root) {
@@ -412,7 +401,6 @@ public final class LiquidGlassInstaller {
         ViewGroup content = findViewByName(activity, ID_CONTENT);
         View videoFull = findViewByName(activity, ID_VIDEO_FULL);
 
-        // 玻璃即将接管手势区避让，先撤销经典避让，避免快照与基准值被污染
         restoreClassicImmersive(bar, midTab);
 
         BarSnapshot snap = new BarSnapshot();
@@ -533,7 +521,7 @@ public final class LiquidGlassInstaller {
                         root.getViewTreeObserver()
                                 .removeOnGlobalLayoutListener(this);
                         if (gen != sSyncGen) {
-                            // 玻璃在首次布局前已被卸载，本轮回调作废
+
                             return;
                         }
                         host.attach();
@@ -556,27 +544,23 @@ public final class LiquidGlassInstaller {
     private static final float FIT_TAB_MAX_WIDTH_DP = 96f;
     private static final float SELECTED_TAB_WEIGHT = 1.4f;
     private static final float OTHER_TAB_WEIGHT = 0.9f;
-    /** Adaptive width: minimum tab cell width in dp (keeps icons/labels off the edges). */
+
     private static final float MIN_TAB_WIDTH_DP = 52f;
-    /** Adaptive width: extra horizontal padding added around measured tab content, in dp. */
+
     private static final float TAB_CONTENT_PAD_DP = 18f;
-    /** Adaptive width: fallback tab cell width in dp when content cannot be measured. */
+
     private static final float FALLBACK_TAB_WIDTH_DP = 54f;
-    /** Adaptive width: minimum center gap dp, must fit the ~56dp publish button. */
+
     private static final float MIN_PLUS_GAP_DP = 64f;
-    /** Upper bound of the configurable glass bar side inset, in dp. */
+
     private static final int MAX_SIDE_MARGIN_DP = 40;
     private static final long FIT_ANIM_MS = 380L;
     private static final float FIT_ANIM_TENSION = 1.1f;
     private static volatile boolean sTabBarActive;
-    /** 安装时的 host 基准 padding 与导航栏 inset（applyBarGeometry 以后者决定冲销量） */
+
     private static int sInstallPadBottom;
     private static int sNavPad;
 
-    /**
-     * 手势区避让由沉浸开关决定：开=冲销 navPad 让玻璃条延伸到手势区，关=保留避让。
-     * 必须同时写 sBasePadBottom，applyBarGeometry 会以它为基准重设 padding
-     */
     private static void applyNavPadState(ViewGroup host) {
         if (host == null || sInstallPadBottom <= 0) {
             return;
@@ -607,15 +591,21 @@ public final class LiquidGlassInstaller {
         }
     }
 
-    /**
-     * 供设置入口在切换沉浸等玻璃参数后调用：先从 prefs 重载配置再刷新，
-     * 避免宿主设置页只写 pref、GlassConfig 静态字段滞后的问题
-     */
     public static void refreshGlassWith(Activity activity) {
         GlassConfig.load(activity);
+
         refreshGlass();
+
+        try {
+            View bar = sTabBarRef.get();
+            if (bar instanceof com.example.liquidglass.LiquidGlassTabBar) {
+                rebuildTabBar((com.example.liquidglass.LiquidGlassTabBar) bar);
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("refresh tab bar failed", t);
+        }
         if (activeGlassHost() == null) {
-            // 玻璃未安装时沉浸仍需作用于经典底栏（必须落到 MainActivity 的窗口）
+
             Activity main = mainActivity();
             if (main != null) {
                 applyClassicImmersive(main);
@@ -675,11 +665,13 @@ public final class LiquidGlassInstaller {
             sRadioBarRef = new java.lang.ref.WeakReference<>(bar);
             sContentViewRef = new java.lang.ref.WeakReference<>(content);
             sCenterRefStatic = null;
+
             final com.example.liquidglass.LiquidGlassTabBar tabBar =
                     new com.example.liquidglass.LiquidGlassTabBar(activity, null, 0);
             sTabBarRef = new java.lang.ref.WeakReference<>(tabBar);
             resetWidthAnimState();
             sBuildSig = "";
+            sSearchTabIndex = -1;
             sLastTabs = -1;
             sStableTabs = -1;
             float density = host.getResources().getDisplayMetrics().density;
@@ -710,6 +702,16 @@ public final class LiquidGlassInstaller {
                 @Override
                 public kotlin.Unit invoke(Integer index) {
                     try {
+                        if (index != null && sSearchTabIndex >= 0
+                                && index == sSearchTabIndex) {
+
+                            restoreTabSelection(tabBar);
+                            if (!openSearchPage(tabBar.getContext())) {
+                                LiquidGlassLog.log(android.util.Log.WARN,
+                                        "search-tab: openSearchPage failed, stay on current tab");
+                            }
+                            return kotlin.Unit.INSTANCE;
+                        }
                         if (sSyncing || index == null || index < 0
                                 || index >= sVisibleButtons.size()) {
                             return kotlin.Unit.INSTANCE;
@@ -890,6 +892,507 @@ public final class LiquidGlassInstaller {
         }
     }
 
+    private static final String HOST_TITLE_BAR_CLASS =
+            "com.max.hbcommon.component.HomeTitleBar";
+    private static final String HOST_SEARCH_ICON_ID = "iv_home_search";
+
+    private static final String HOST_HOME_TAB_ID = "rb_1";
+
+    private static final String HOST_SEARCH_ACTIVITY_CLASS =
+            "com.max.hbsearch.SearchNewActivity";
+
+    private static final String HOST_SEARCH_COMPANION_CLASS =
+            "com.max.hbsearch.SearchNewActivity$a";
+
+    private static final String HOST_SEARCH_SRC = "main";
+
+    private static final int HOST_SEARCH_PAGE_TYPE = 37;
+
+    private static View findSearchIcon(android.content.Context context) {
+        try {
+            View titleBar = sSearchTitleBarRef == null ? null : sSearchTitleBarRef.get();
+            View icon = sSearchIconRef == null ? null : sSearchIconRef.get();
+            if (icon != null && titleBar != null && isValidSearchIcon(icon, titleBar)) {
+                return icon;
+            }
+            if (icon != null || titleBar != null) {
+                LiquidGlassLog.log(android.util.Log.DEBUG,
+                        "search-tab: cached icon rejected (icon=" + (icon != null)
+                                + " titleBar=" + (titleBar != null) + "), re-resolving");
+                invalidateSearchIconCache();
+            }
+            Activity activity = activityOf(context);
+            if (activity == null || activity.getWindow() == null) {
+                return null;
+            }
+            View found = findTitleBarInTree(activity, true, false);
+            if (found == null) {
+                return null;
+            }
+            View foundIcon = searchIconIn(found);
+            if (foundIcon == null || !isValidSearchIcon(foundIcon, found)) {
+                return null;
+            }
+            sSearchTitleBarRef = new java.lang.ref.WeakReference<>(found);
+            sSearchIconRef = new java.lang.ref.WeakReference<>(foundIcon);
+            LiquidGlassLog.log(android.util.Log.INFO,
+                    "search-tab: resolved title icon inside "
+                            + found.getClass().getName());
+            return foundIcon;
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("search-tab: resolve title icon failed", t);
+            return null;
+        }
+    }
+
+    private static Activity activityOf(android.content.Context context) {
+        android.content.Context ctx = context;
+        for (int i = 0; i < 6 && ctx instanceof android.content.ContextWrapper
+                && !(ctx instanceof Activity); i++) {
+            ctx = ((android.content.ContextWrapper) ctx).getBaseContext();
+        }
+        if (ctx instanceof Activity) {
+            Activity a = (Activity) ctx;
+            if (!a.isFinishing() && !a.isDestroyed()) {
+                return a;
+            }
+            return null;
+        }
+        return mainActivity();
+    }
+
+    private static boolean isValidSearchIcon(View icon, View titleBar) {
+        try {
+            if (!(icon instanceof android.widget.ImageView) || titleBar == null) {
+                return false;
+            }
+            if (!icon.isAttachedToWindow() || !titleBar.isAttachedToWindow()) {
+                return false;
+            }
+            if (((android.widget.ImageView) icon).getDrawable() == null) {
+                return false;
+            }
+            if (isRepurposedTitleBar(titleBar)) {
+                return false;
+            }
+            if (!titleBar.isShown() || titleBar.getHeight() <= 0) {
+                return false;
+            }
+
+            if (!icon.isShown() && !sHiddenSearchIcons.containsKey(icon)) {
+                return false;
+            }
+            return titleBarOf(icon) == titleBar;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static View titleBarOf(View view) {
+        int depth = 0;
+        for (View v = view; v != null && depth < 24; depth++) {
+            if (isTitleBarClass(v.getClass())) {
+                return v;
+            }
+            v = v.getParent() instanceof View ? (View) v.getParent() : null;
+        }
+        return null;
+    }
+
+    private static boolean isTitleBarClass(Class<?> type) {
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
+            if (HOST_TITLE_BAR_CLASS.equals(c.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRepurposedTitleBar(View titleBar) {
+        return titleBar != null && sRepurposedTitleBars.containsKey(titleBar);
+    }
+
+    private static View searchIconIn(View titleBar) {
+        try {
+            if (titleBar == null) {
+                return null;
+            }
+            android.content.Context context = titleBar.getContext();
+            int id = context.getResources().getIdentifier(
+                    HOST_SEARCH_ICON_ID, "id", context.getPackageName());
+            if (id == 0) {
+                return null;
+            }
+            View v = titleBar.findViewById(id);
+            return v instanceof android.widget.ImageView ? v : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static View findTitleBarInTree(Activity activity, boolean requireSearchIcon,
+                                           boolean allowRepurposed) {
+        View root = activity.getWindow().getDecorView();
+        if (root == null) {
+            return null;
+        }
+        java.util.ArrayDeque<View> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        int guard = 0;
+        while (!queue.isEmpty() && guard++ < 4096) {
+            View v = queue.poll();
+            if (v == null) {
+                continue;
+            }
+            if (isTitleBarClass(v.getClass()) && v.isAttachedToWindow()
+                    && v.isShown() && v.getHeight() > 0
+                    && (allowRepurposed || !isRepurposedTitleBar(v))) {
+                if (!requireSearchIcon) {
+                    return v;
+                }
+                View icon = searchIconIn(v);
+                if (icon != null && isValidSearchIcon(icon, v)) {
+                    return v;
+                }
+            }
+            if (v instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) v;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    View child = group.getChildAt(i);
+                    if (child != null) {
+                        queue.add(child);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void invalidateSearchIconCache() {
+        sSearchIconRef = new java.lang.ref.WeakReference<>(null);
+        sSearchTitleBarRef = new java.lang.ref.WeakReference<>(null);
+    }
+
+    private static void invalidateSearchIconFor(View titleBar) {
+        if (titleBar == null) {
+            return;
+        }
+        View cachedBar = sSearchTitleBarRef == null ? null : sSearchTitleBarRef.get();
+        View cachedIcon = sSearchIconRef == null ? null : sSearchIconRef.get();
+        if (cachedBar == titleBar
+                || (cachedIcon != null && titleBarOf(cachedIcon) == titleBar)) {
+            invalidateSearchIconCache();
+        }
+    }
+
+    private static void markRepurposedTitleBar(View titleBar) {
+        if (titleBar == null) {
+            return;
+        }
+        sRepurposedTitleBars.put(titleBar, Boolean.TRUE);
+        invalidateSearchIconFor(titleBar);
+        LiquidGlassLog.log(android.util.Log.INFO,
+                "search-tab: title bar marked repurposed (iv_home_search = 设置)");
+    }
+
+    private static boolean isHomeTabSelected(android.content.Context context) {
+        try {
+            android.widget.RadioGroup bar = sRadioBarRef.get();
+            if (bar == null || context == null) {
+                return false;
+            }
+            int homeId = context.getResources().getIdentifier(
+                    HOST_HOME_TAB_ID, "id", context.getPackageName());
+            if (homeId == 0) {
+                return false;
+            }
+            return bar.getCheckedRadioButtonId() == homeId;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static void syncTopSearchIconVisibility(android.content.Context context,
+                                                    boolean searchApplied) {
+        try {
+            if (!searchApplied) {
+                restoreHiddenSearchIcons();
+                return;
+            }
+            if (!isHomeTabSelected(context)) {
+                return;
+            }
+            View icon = findSearchIcon(context);
+            if (icon == null) {
+                return;
+            }
+            boolean alreadyHidden = icon.getVisibility() != View.VISIBLE;
+            sHiddenSearchIcons.put(icon, Boolean.TRUE);
+            if (!alreadyHidden) {
+                icon.setVisibility(View.INVISIBLE);
+                LiquidGlassLog.log(android.util.Log.INFO,
+                        "search-tab: top title icon hidden"
+                                + " (search item lives in glass bar)");
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("search-tab: sync top icon visibility failed", t);
+        }
+    }
+
+    private static void restoreHiddenSearchIcons() {
+        if (sHiddenSearchIcons.isEmpty()) {
+            return;
+        }
+        for (View v : new java.util.ArrayList<>(sHiddenSearchIcons.keySet())) {
+            try {
+                if (v != null && v.getVisibility() != View.VISIBLE) {
+                    v.setVisibility(View.VISIBLE);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        sHiddenSearchIcons.clear();
+        LiquidGlassLog.log(android.util.Log.DEBUG,
+                "search-tab: hidden top icons restored");
+    }
+
+    private static boolean isSearchInBar(android.content.Context context) {
+        try {
+            return com.better.heybox.HeyboxPrefs.getBoolean(
+                    com.better.heybox.App.KEY_GLASS_SEARCH_IN_BAR, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static void restoreTabSelection(
+            com.example.liquidglass.LiquidGlassTabBar tabBar) {
+        try {
+            int selected = 0;
+            android.widget.RadioGroup bar = sRadioBarRef.get();
+            if (bar != null) {
+                int checked = bar.getCheckedRadioButtonId();
+                for (int i = 0; i < sVisibleButtons.size(); i++) {
+                    android.widget.RadioButton rb = sVisibleButtons.get(i);
+                    if (rb != null && rb.getId() == checked) {
+                        selected = i;
+                        break;
+                    }
+                }
+            }
+            sSyncing = true;
+            try {
+                tabBar.setSelectedIndex(selected);
+            } finally {
+                sSyncing = false;
+            }
+            applyTabWidths(selected);
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("restore tab selection failed", t);
+        }
+    }
+
+    static boolean openSearchPage(android.content.Context context) {
+        if (context == null) {
+            return false;
+        }
+
+        try {
+            android.content.Intent intent = new android.content.Intent();
+            intent.setClassName(context, HOST_SEARCH_ACTIVITY_CLASS);
+            intent.putExtra("src", HOST_SEARCH_SRC);
+            intent.putExtra("page_type", HOST_SEARCH_PAGE_TYPE);
+            if (!(context instanceof Activity)) {
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            }
+            context.startActivity(intent);
+            LiquidGlassLog.log(android.util.Log.DEBUG,
+                    "search-tab: opened search page (direct intent)"
+                            + " src=" + HOST_SEARCH_SRC
+                            + " page_type=" + HOST_SEARCH_PAGE_TYPE
+                            + " pick_only=<absent>");
+            return true;
+        } catch (Throwable t) {
+            LiquidGlassLog.log(android.util.Log.WARN,
+                    "search-tab: direct search intent failed, trying companion: " + t);
+        }
+
+        try {
+            ClassLoader cl = context.getClassLoader();
+            Class<?> outer = Class.forName(
+                    HOST_SEARCH_ACTIVITY_CLASS, false, cl);
+            Class<?> companion = Class.forName(
+                    HOST_SEARCH_COMPANION_CLASS, false, cl);
+            Object instance = null;
+            try {
+                java.lang.reflect.Field f = outer.getField("a");
+                instance = f.get(null);
+            } catch (Throwable ignored) {
+            }
+            if (instance != null) {
+                for (java.lang.reflect.Method m : companion.getDeclaredMethods()) {
+                    Class<?>[] types = m.getParameterTypes();
+                    if (types.length != 1 || types[0] != android.content.Context.class
+                            || m.getReturnType() != android.content.Intent.class) {
+                        continue;
+                    }
+                    try {
+                        m.setAccessible(true);
+                    } catch (Throwable ignored) {
+                    }
+                    Object intent = m.invoke(instance, context);
+                    if (intent instanceof android.content.Intent) {
+                        android.content.Intent it = (android.content.Intent) intent;
+
+                        it.removeExtra("pick_only");
+                        it.removeExtra("page_extras");
+                        it.putExtra("src", HOST_SEARCH_SRC);
+                        it.putExtra("page_type", HOST_SEARCH_PAGE_TYPE);
+                        if (!(context instanceof Activity)) {
+                            it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        }
+                        context.startActivity(it);
+                        LiquidGlassLog.log(android.util.Log.WARN,
+                                "search-tab: opened search page (companion fallback,"
+                                        + " rewritten to src=" + HOST_SEARCH_SRC
+                                        + " page_type=" + HOST_SEARCH_PAGE_TYPE + ")");
+                        return true;
+                    }
+                }
+            } else {
+                LiquidGlassLog.log(android.util.Log.WARN,
+                        "search page launcher: companion instance field a is null");
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.log(android.util.Log.WARN,
+                    "search page launcher failed: " + t);
+        }
+        LiquidGlassLog.log(android.util.Log.WARN,
+                "search-tab: cannot open search page; caller may only click a verified"
+                        + " title icon (never performClick blindly)");
+        return false;
+    }
+
+    private static java.util.List<android.widget.RadioButton> collectVisibleButtons(
+            android.widget.RadioGroup bar) {
+        java.util.List<android.widget.RadioButton> out = new java.util.ArrayList<>();
+        for (int i = 0; i < bar.getChildCount(); i++) {
+            View child = bar.getChildAt(i);
+            if (child instanceof android.widget.RadioButton
+                    && child.getVisibility() == View.VISIBLE) {
+                out.add((android.widget.RadioButton) child);
+            }
+        }
+        return out;
+    }
+
+    static float barCornerRadiusPx(int heightPx, float den) {
+        return Math.min(heightPx * 0.46f, 30f * den);
+    }
+
+    private static final int TOKEN_SEARCH = -1;
+
+    private static java.util.List<Integer> parseTabOrder(String raw) {
+        java.util.List<Integer> ids = new java.util.ArrayList<>();
+        if (raw == null || raw.isEmpty()) {
+            return ids;
+        }
+        for (String part : raw.split(",")) {
+            String s = part.trim();
+            if (s.isEmpty()) {
+                continue;
+            }
+            try {
+                int id = Integer.parseInt(s);
+                if (id != 0 && !ids.contains(id)) {
+                    ids.add(id);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return ids;
+    }
+
+    private static java.util.List<Integer> applyOrderTokens(
+            java.util.List<android.widget.RadioButton> hostOrder, String rawOrder,
+            boolean searchInBar) {
+        java.util.List<Integer> out = new java.util.ArrayList<>(hostOrder.size() + 1);
+        java.util.List<Integer> prefer = parseTabOrder(rawOrder);
+        java.util.Set<Integer> hostIds = new java.util.HashSet<>();
+        for (int i = 0; i < hostOrder.size(); i++) {
+            hostIds.add(hostOrder.get(i).getId());
+        }
+        for (int k = 0; k < prefer.size(); k++) {
+            int token = prefer.get(k);
+            if (token == TOKEN_SEARCH) {
+                if (searchInBar && !out.contains(TOKEN_SEARCH)) {
+                    out.add(TOKEN_SEARCH);
+                }
+            } else if (hostIds.contains(token) && !out.contains(token)) {
+                out.add(token);
+            }
+        }
+        for (int i = 0; i < hostOrder.size(); i++) {
+            int id = hostOrder.get(i).getId();
+            if (!out.contains(id)) {
+                out.add(id);
+            }
+        }
+        if (searchInBar && !out.contains(TOKEN_SEARCH)) {
+            out.add(TOKEN_SEARCH);
+        }
+        return out;
+    }
+
+    static java.util.List<Integer> appliedOrderTokens(
+            android.widget.RadioGroup bar, boolean searchInBar) {
+        java.util.List<Integer> tokens = new java.util.ArrayList<>();
+        try {
+            if (bar == null) {
+                return tokens;
+            }
+            GlassConfig.load(bar.getContext());
+            tokens.addAll(applyOrderTokens(
+                    collectVisibleButtons(bar), GlassConfig.tabOrder, searchInBar));
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("appliedOrderTokens failed", t);
+        }
+        return tokens;
+    }
+
+    private static android.widget.RadioButton findButtonById(
+            android.widget.RadioGroup bar, int id) {
+        if (bar == null || id == 0) {
+            return null;
+        }
+        try {
+            View v = bar.findViewById(id);
+            return v instanceof android.widget.RadioButton
+                    ? (android.widget.RadioButton) v : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Drawable moduleSearchDrawable(android.content.Context context) {
+        try {
+            Drawable d = SearchGlyphDrawable.create(context);
+            if (d != null) {
+                return d;
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("search-tab: SearchGlyphDrawable failed", t);
+        }
+
+        try {
+            Drawable d = context.getDrawable(android.R.drawable.ic_menu_search);
+            return d == null ? null : d.mutate();
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("search-tab: framework search icon failed", t);
+            return null;
+        }
+    }
+
     private static void rebuildTabBar(
             com.example.liquidglass.LiquidGlassTabBar tabBar) {
         try {
@@ -898,48 +1401,143 @@ public final class LiquidGlassInstaller {
             if (bar == null || host == null || tabBar == null) {
                 return;
             }
-            GlassConfig.load(tabBar.getContext());
-            boolean publishHidden = readPublishHidden(tabBar.getContext());
-            java.util.List<com.example.liquidglass.LiquidGlassTabBar.TabItem> items =
-                    new java.util.ArrayList<>();
-            java.lang.StringBuilder sig = new java.lang.StringBuilder();
-            sVisibleButtons.clear();
-            for (int i = 0; i < bar.getChildCount(); i++) {
-                View child = bar.getChildAt(i);
-                if (child instanceof android.widget.RadioButton
-                        && child.getVisibility() == View.VISIBLE) {
-                    android.widget.RadioButton rb = (android.widget.RadioButton) child;
-                    sig.append(rb.getId()).append(',');
-                    CharSequence title = rb.getText();
-                    Drawable icon = rb.getCompoundDrawables()[1];
-                    if (icon != null) {
-                        icon.mutate();
-                    }
-                    items.add(new com.example.liquidglass.LiquidGlassTabBar.TabItem(
-                            title, icon));
-                    sVisibleButtons.add(rb);
-                }
-            }
-            sig.append(GlassConfig.fitTabs ? 'F' : 'f')
-                    .append(publishHidden ? 'P' : 'p');
-            String nextSig = sig.toString();
-            if (nextSig.equals(sBuildSig)) {
-                return;
-            }
-            if (items.isEmpty()) {
+            android.content.Context context = tabBar.getContext();
+            GlassConfig.load(context);
+            boolean publishHidden = readPublishHidden(context);
+
+            java.util.List<android.widget.RadioButton> hostOrder = collectVisibleButtons(bar);
+            if (hostOrder.isEmpty()) {
                 LiquidGlassLog.log(android.util.Log.WARN,
                         "tabbar: no radio buttons found");
                 return;
             }
+            boolean searchInBar = isSearchInBar(context);
+            Drawable searchDrawable = searchInBar ? moduleSearchDrawable(context) : null;
+
+            boolean searchUsable = searchDrawable != null;
+            if (searchInBar && !searchUsable) {
+                LiquidGlassLog.log(android.util.Log.WARN,
+                        "search-tab: drawable unavailable, skip");
+            }
+
+            java.util.List<Integer> tokens =
+                    applyOrderTokens(hostOrder, GlassConfig.tabOrder, searchUsable);
+            if (tokens.isEmpty()) {
+                return;
+            }
+
+            LiquidGlassLog.log(android.util.Log.DEBUG,
+                    "search-tab: index=" + sSearchTabIndex
+                            + ", buttons=" + sVisibleButtons.size()
+                            + ", tokens=" + tokens.size());
+
+            java.lang.StringBuilder sig = new java.lang.StringBuilder();
+            for (int i = 0; i < tokens.size(); i++) {
+                sig.append(tokens.get(i)).append(',');
+            }
+            sig.append('|').append(GlassConfig.fitTabs ? 'F' : 'f')
+                    .append(publishHidden ? 'P' : 'p')
+                    .append(searchDrawable != null ? 'S' : 's');
+            String nextSig = sig.toString();
+            if (nextSig.equals(sBuildSig)) {
+
+                int appliedCount = sVisibleButtons.size();
+                LiquidGlassLog.log(android.util.Log.DEBUG,
+                        "search-tab: index=" + sSearchTabIndex
+                                + ", buttons=" + sVisibleButtons.size()
+                                + ", applied=" + appliedCount);
+
+                int expectedSearchIndex = sAppliedOrder.indexOf(TOKEN_SEARCH);
+                boolean aligned = sVisibleButtons.size() == sAppliedOrder.size();
+                if (aligned) {
+                    for (int i = 0; i < sAppliedOrder.size(); i++) {
+                        int token = sAppliedOrder.get(i);
+                        android.widget.RadioButton rb = sVisibleButtons.get(i);
+                        if (token == TOKEN_SEARCH) {
+                            if (rb != null) {
+                                aligned = false;
+                                break;
+                            }
+                        } else if (rb == null || rb.getId() != token) {
+                            aligned = false;
+                            break;
+                        }
+                    }
+                }
+                if (!aligned || sSearchTabIndex != expectedSearchIndex) {
+                    LiquidGlassLog.log(android.util.Log.WARN,
+                            "search-tab: index mismatch, forcing rebuild (applied="
+                                    + sAppliedOrder
+                                    + ", buttons=" + sVisibleButtons.size()
+                                    + ", index=" + sSearchTabIndex
+                                    + ", expected=" + expectedSearchIndex + ")");
+                    sBuildSig = "";
+                    restoreHiddenSearchIcons();
+                    return;
+                }
+                boolean searchApplied = sSearchTabIndex >= 0
+                        && findTabsRow(tabBar, appliedCount) != null;
+                syncTopSearchIconVisibility(context, searchApplied);
+                return;
+            }
             sBuildSig = nextSig;
+
+            java.util.List<com.example.liquidglass.LiquidGlassTabBar.TabItem> items =
+                    new java.util.ArrayList<>(tokens.size());
+            java.util.List<android.widget.RadioButton> buttons =
+                    new java.util.ArrayList<>(tokens.size());
+            int nextSearchIndex = -1;
+            for (int i = 0; i < tokens.size(); i++) {
+                int token = tokens.get(i);
+                if (token == TOKEN_SEARCH) {
+                    if (searchDrawable == null) {
+                        continue;
+                    }
+                    items.add(new com.example.liquidglass.LiquidGlassTabBar.TabItem(
+                            "搜索", searchDrawable));
+                    buttons.add(null);
+                    nextSearchIndex = items.size() - 1;
+                    continue;
+                }
+                android.widget.RadioButton rb = findButtonById(bar, token);
+                if (rb == null) {
+
+                    continue;
+                }
+                Drawable icon = rb.getCompoundDrawables()[1];
+                if (icon != null) {
+                    icon.mutate();
+                }
+                items.add(new com.example.liquidglass.LiquidGlassTabBar.TabItem(
+                        rb.getText(), icon));
+                buttons.add(rb);
+            }
+            if (items.isEmpty()) {
+                LiquidGlassLog.log(android.util.Log.WARN,
+                        "tabbar: no items built, skip");
+                return;
+            }
+            if (nextSearchIndex >= 0) {
+                LiquidGlassLog.log(android.util.Log.INFO,
+                        "search-tab: appended index=" + nextSearchIndex
+                                + " (token order=" + tokens + ")");
+            }
+
+            sVisibleButtons.clear();
+            sVisibleButtons.addAll(buttons);
+
+            sAppliedOrder.clear();
+            sAppliedOrder.addAll(tokens);
             sSyncing = true;
             try {
                 tabBar.setTabs(items);
+                sSearchTabIndex = nextSearchIndex;
                 applyBarMode(bar, tabBar);
                 int checked = bar.getCheckedRadioButtonId();
                 int selected = 0;
                 for (int i = 0; i < sVisibleButtons.size(); i++) {
-                    if (sVisibleButtons.get(i).getId() == checked) {
+                    android.widget.RadioButton rb = sVisibleButtons.get(i);
+                    if (rb != null && rb.getId() == checked) {
                         selected = i;
                         break;
                     }
@@ -948,6 +1546,18 @@ public final class LiquidGlassInstaller {
                 tabBar.setSelectedIndex(selected);
                 applyTabBarOverLight(tabBar, !sChromeLight);
                 tabBar.requestLayout();
+
+                int appliedCount = sVisibleButtons.size();
+                boolean searchApplied = sSearchTabIndex >= 0
+                        && findTabsRow(tabBar, appliedCount) != null;
+                syncTopSearchIconVisibility(context, searchApplied);
+                if (searchApplied) {
+
+                    attachPanelEntryToSearchTab(tabBar, items.size());
+                    if (context instanceof Activity) {
+                        attachTitleBarPanelEntry((Activity) context);
+                    }
+                }
             } finally {
                 sSyncing = false;
             }
@@ -956,10 +1566,215 @@ public final class LiquidGlassInstaller {
             host.post(() -> placeCenterNow(h2, t2, sCenterRefStatic, 0));
             LiquidGlassLog.log(android.util.Log.INFO,
                     "glass tab bar rebuilt: tabs=" + items.size()
-                            + " publishHidden=" + publishHidden);
+                            + " order=" + sAppliedOrder
+                            + " publishHidden=" + publishHidden
+                            + " searchInBar=" + (sSearchTabIndex >= 0));
         } catch (Throwable t) {
             LiquidGlassLog.logErr("glass tab bar rebuild failed", t);
         }
+    }
+
+    private static android.content.Context configContext() {
+        Activity main = mainActivity();
+        if (main != null) {
+            return main;
+        }
+        View bar = sTabBarRef.get();
+        if (bar != null) {
+            return bar.getContext();
+        }
+        ViewGroup host = sHostRef;
+        return host == null ? null : host.getContext();
+    }
+
+    private static java.util.List<Integer> currentOrderedTokens() {
+        if (!sAppliedOrder.isEmpty()) {
+            return new java.util.ArrayList<>(sAppliedOrder);
+        }
+        android.widget.RadioGroup bar = sRadioBarRef.get();
+        if (bar == null) {
+            return new java.util.ArrayList<>();
+        }
+        GlassConfig.load(bar.getContext());
+        android.content.Context ctx = configContext();
+        boolean searchInBar = ctx != null && isSearchInBar(ctx);
+        return applyOrderTokens(
+                collectVisibleButtons(bar), GlassConfig.tabOrder, searchInBar);
+    }
+
+    private static boolean hasGlassBar() {
+        View bar = sTabBarRef.get();
+        if (bar instanceof com.example.liquidglass.LiquidGlassTabBar) {
+            return true;
+        }
+        return false;
+    }
+
+    static java.util.List<String> visibleTabLabels() {
+        java.util.List<String> labels = new java.util.ArrayList<>();
+        try {
+            if (!hasGlassBar()) {
+                return labels;
+            }
+            java.util.List<Integer> tokens = currentOrderedTokens();
+            android.widget.RadioGroup bar = sRadioBarRef.get();
+            for (int i = 0; i < tokens.size(); i++) {
+                int token = tokens.get(i);
+                if (token == TOKEN_SEARCH) {
+                    labels.add("搜索");
+                    continue;
+                }
+                android.widget.RadioButton rb = bar == null
+                        ? null : findButtonById(bar, token);
+                CharSequence title = rb == null ? null : rb.getText();
+                labels.add(title == null ? "" : title.toString());
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("visibleTabLabels failed", t);
+        }
+        return labels;
+    }
+
+    static void moveTabOrder(int from, int to) {
+        try {
+            java.util.List<Integer> tokens = currentOrderedTokens();
+            int count = tokens.size();
+            if (count <= 1) {
+                return;
+            }
+            int f = from < 0 ? 0 : (from >= count ? count - 1 : from);
+            int target = to < 0 ? 0 : (to >= count ? count - 1 : to);
+            if (f == target) {
+                return;
+            }
+            Integer moved = tokens.remove(f);
+            tokens.add(target, moved);
+            java.lang.StringBuilder idList = new java.lang.StringBuilder();
+            for (int i = 0; i < tokens.size(); i++) {
+                int token = tokens.get(i);
+                if (token == 0) {
+                    continue;
+                }
+                if (idList.length() > 0) {
+                    idList.append(',');
+                }
+                idList.append(token);
+            }
+            GlassConfig.tabOrder = idList.toString();
+
+            sAppliedOrder.clear();
+            sAppliedOrder.addAll(tokens);
+            android.content.Context ctx = configContext();
+            if (ctx != null) {
+                try {
+                    GlassConfig.save(ctx);
+                } catch (Throwable saveError) {
+                    LiquidGlassLog.logErr("tab order save failed", saveError);
+                }
+            }
+            Activity main = mainActivity();
+            if (main != null && main.getWindow() != null) {
+                main.getWindow().getDecorView().post(() -> refreshGlassWith(main));
+            }
+            LiquidGlassLog.log(android.util.Log.INFO,
+                    "tab order moved: " + f + " -> " + target
+                            + " order=" + GlassConfig.tabOrder);
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("moveTabOrder failed", t);
+        }
+    }
+
+    static void resetTabOrder() {
+        try {
+            GlassConfig.tabOrder = "";
+            android.content.Context ctx = configContext();
+            if (ctx != null) {
+                try {
+                    GlassConfig.save(ctx);
+                } catch (Throwable t) {
+                    LiquidGlassLog.logErr("tab order save failed", t);
+                }
+            }
+            Activity main = mainActivity();
+            if (main != null && main.getWindow() != null) {
+                main.getWindow().getDecorView().post(() -> refreshGlassWith(main));
+            }
+            LiquidGlassLog.log(android.util.Log.INFO,
+                    "tab order reset to host order");
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("resetTabOrder failed", t);
+        }
+    }
+
+    private static void attachTitleBarPanelEntry(Activity activity) {
+        try {
+            if (activity == null || GlassProvider.prefersHbmod(activity)) {
+                return;
+            }
+            if (activity.getWindow() == null) {
+                return;
+            }
+            View titleBar = findTitleBarInTree(activity, false, true);
+            if (titleBar == null) {
+                LiquidGlassLog.log(android.util.Log.DEBUG,
+                        "title bar panel entry: no visible HomeTitleBar found");
+                return;
+            }
+            titleBar.setOnLongClickListener(v -> {
+                GlassSettingsSheet.show(activity);
+                return true;
+            });
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("title bar panel entry failed", t);
+        }
+    }
+
+    private static void attachPanelEntryToSearchTab(
+            com.example.liquidglass.LiquidGlassTabBar tabBar, int tabCount) {
+        if (!(tabBar.getContext() instanceof Activity) || tabCount <= 1) {
+            return;
+        }
+        final Activity activity = (Activity) tabBar.getContext();
+        if (GlassProvider.prefersHbmod(activity)) {
+            return;
+        }
+        tabBar.post(() -> {
+            try {
+                ViewGroup row = findTabsRow(tabBar, tabCount);
+                if (row == null || row.getChildCount() == 0) {
+                    return;
+                }
+                View last = row.getChildAt(row.getChildCount() - 1);
+                if (last == null || Boolean.TRUE.equals(sGlassEntries.get(last))) {
+                    return;
+                }
+                sGlassEntries.put(last, Boolean.TRUE);
+                last.setOnLongClickListener(v -> {
+                    GlassSettingsSheet.show(activity);
+                    return true;
+                });
+            } catch (Throwable t) {
+                LiquidGlassLog.logErr("search tab panel entry failed", t);
+            }
+        });
+    }
+
+    private static ViewGroup findTabsRow(ViewGroup bar, int tabCount) {
+        java.util.ArrayDeque<ViewGroup> queue = new java.util.ArrayDeque<>();
+        queue.add(bar);
+        while (!queue.isEmpty()) {
+            ViewGroup group = queue.poll();
+            if (group != bar && group.getChildCount() == tabCount) {
+                return group;
+            }
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                if (child instanceof ViewGroup && child != bar) {
+                    queue.add((ViewGroup) child);
+                }
+            }
+        }
+        return null;
     }
 
     private static void startTabVisibilitySync(
@@ -970,7 +1785,7 @@ public final class LiquidGlassInstaller {
             @Override
             public void run() {
                 if (gen != sSyncGen) {
-                    // 玻璃已卸载/重装，本轮询作废
+
                     return;
                 }
                 if (!bar.isAttachedToWindow()) {
@@ -1183,6 +1998,9 @@ public final class LiquidGlassInstaller {
                     named++;
                 }
             }
+            if (sSearchTabIndex >= 0) {
+                named++;
+            }
             return visibleTabs > 0 && visibleTabs < named;
         } catch (Throwable ignored) {
             return false;
@@ -1278,8 +2096,7 @@ public final class LiquidGlassInstaller {
             sFitActive = fit;
             float[] before = glide ? captureTabCenters(row) : null;
             int selected = Math.max(0, Math.min(selectedIndex, tabs - 1));
-            // Adaptive mode weights are plain dp values; adaptiveBarWidth derives the bar
-            // width from the very same metrics, so bar and content always stay in sync.
+
             float den = sDensity > 0 ? sDensity
                     : barV.getResources().getDisplayMetrics().density;
             float[] metrics = !fit && GlassConfig.barWidthMode == 0
@@ -1896,15 +2713,13 @@ public final class LiquidGlassInstaller {
             android.widget.LinearLayout.LayoutParams lp =
                     new android.widget.LinearLayout.LayoutParams(0,
                             ViewGroup.LayoutParams.MATCH_PARENT, CENTER_GAP_WEIGHT);
-            // (count+1)/2：奇数个 tab 时槽位也落在正中（3 tab → [t,t,槽,t]），
-            // 且与 glideCenterTo/placeCenterNow 的 n/2 查找一致
+
             ll.addView(spacer, (count + 1) / 2, lp);
         } catch (Throwable t) {
             LiquidGlassLog.logErr("center gap failed", t);
         }
     }
 
-    /** 发布按钮盖到中央槽位正上方（宽度=槽宽，整槽可点），行未测完时 post 重试 */
     private static void placeCenterNow(ViewGroup host, ViewGroup tabBar,
                                        View center, int attempt) {
         if (center == null || sPlusHidden || sCircleMode || attempt > 10) {
@@ -1969,6 +2784,10 @@ public final class LiquidGlassInstaller {
                 return;
             }
             rlp.gravity = want;
+            if (rlp.width == ViewGroup.LayoutParams.MATCH_PARENT) {
+                rlp.leftMargin = 0;
+                rlp.rightMargin = 0;
+            }
             row.setLayoutParams(rlp);
         } catch (Throwable t) {
             LiquidGlassLog.logErr("center tabs row failed", t);
@@ -1992,7 +2811,7 @@ public final class LiquidGlassInstaller {
             if (parentWidth <= 0) {
                 return;
             }
-            // Side insets apply to every mode: even "fill" only fills the usable width (#34).
+
             float den = sDensity > 0 ? sDensity
                     : host.getResources().getDisplayMetrics().density;
             int side = sideMarginPx(den);
@@ -2024,12 +2843,6 @@ public final class LiquidGlassInstaller {
         }
     }
 
-    /**
-     * Adaptive width: size the bar to the measured tab content and center it (#34).
-     * The old code treated the 96dp/tab cap as the real width, so 5 tabs asked for 584dp
-     * and always got clamped to the parent width - adaptive behaved exactly like "fill".
-     * Now it is content width + center gap, bounded by the side insets.
-     */
     private static int adaptiveBarWidth(View host, int parentWidth) {
         float den = sDensity > 0 ? sDensity
                 : host.getResources().getDisplayMetrics().density;
@@ -2049,23 +2862,18 @@ public final class LiquidGlassInstaller {
             return max;
         }
         float[] metrics = adaptiveMetricsDp(den);
-        // Weights are dp, so bar width = visible tabs + center gap + bar padding.
+
         float w = (tabs * metrics[0] + metrics[1]) * den + Math.round(8f * den);
         return Math.max(Math.round(MIN_TAB_WIDTH_DP * den),
                 Math.min(Math.round(w), max));
     }
 
-    /** Glass bar side inset in px, clamped to 0-40dp. */
     private static int sideMarginPx(float den) {
         int dp = Math.max(0, Math.min(
                 GlassConfig.barSideMarginDp, MAX_SIDE_MARGIN_DP));
         return Math.round(dp * den);
     }
 
-    /**
-     * Adaptive width metrics in dp: {tab cell width, center gap width}.
-     * Shared with the weights written by {@link #applyTabWidths(int)}.
-     */
     private static float[] adaptiveMetricsDp(float den) {
         float scale = Math.max(50, Math.min(GlassConfig.tabWidthPct, 150)) / 100f;
         float content = measureTabContentDp(den);
@@ -2074,14 +2882,13 @@ public final class LiquidGlassInstaller {
         tab = Math.max(MIN_TAB_WIDTH_DP * scale,
                 Math.min(tab, FIT_TAB_MAX_WIDTH_DP * scale));
         if (content > 0f) {
-            // Never shrink a cell below its own content: smaller only clips icon/label.
+
             tab = Math.max(tab, content);
         }
         float gap = sCircleMode || sPlusHidden ? 0f : plusGapDp(den, tab);
         return new float[]{tab, gap};
     }
 
-    /** Center gap width in dp: measured publish button + padding, 64dp fallback. */
     private static float plusGapDp(float den, float tabDp) {
         float gap = MIN_PLUS_GAP_DP;
         try {
@@ -2095,7 +2902,6 @@ public final class LiquidGlassInstaller {
         return Math.max(gap, tabDp);
     }
 
-    /** Measured content width of the widest tab in dp (text via Paint, icon intrinsic). */
     private static float measureTabContentDp(float den) {
         try {
             View barV = sTabBarRef.get();
@@ -2156,7 +2962,7 @@ public final class LiquidGlassInstaller {
         if (best <= 0) {
             return 0;
         }
-        // Hard content only (icon/label + tab padding); breathing room is added by callers.
+
         return best + tab.getPaddingLeft() + tab.getPaddingRight();
     }
 
@@ -2175,6 +2981,7 @@ public final class LiquidGlassInstaller {
             int hDp = GlassConfig.barHeightDp;
             FrameLayout.LayoutParams blp =
                     (FrameLayout.LayoutParams) barV.getLayoutParams();
+
             blp.height = hDp <= 0
                     ? ViewGroup.LayoutParams.WRAP_CONTENT
                     : Math.round(hDp * den);
@@ -2343,7 +3150,6 @@ public final class LiquidGlassInstaller {
         }
     }
 
-    /** 卸载玻璃时还原宿主原始的底栏选中监听 */
     private static void unwrapCheckedListener(ViewGroup barView) {
         if (!(barView instanceof android.widget.RadioGroup)
                 || sWrappedListener == null) {
@@ -2385,7 +3191,8 @@ public final class LiquidGlassInstaller {
                                               final com.example.liquidglass.LiquidGlassTabBar tabBar) {
         wrapCheckedListener(bar, (group, checkedId) -> {
             for (int i = 0; i < sVisibleButtons.size(); i++) {
-                if (sVisibleButtons.get(i).getId() == checkedId
+                android.widget.RadioButton rb = sVisibleButtons.get(i);
+                if (rb != null && rb.getId() == checkedId
                         && tabBar.getSelectedIndex() != i) {
                     prepareSelectionLayout(tabBar, i);
                     tabBar.setSelectedIndex(i);
@@ -2421,8 +3228,27 @@ public final class LiquidGlassInstaller {
     private static volatile java.lang.ref.WeakReference<View> sTabBarRef = EMPTY_BAR_REF;
     private static final java.util.List<android.widget.RadioButton> sVisibleButtons =
             new java.util.ArrayList<>();
+
+    private static volatile java.lang.ref.WeakReference<View> sSearchIconRef =
+            new java.lang.ref.WeakReference<>(null);
+
+    private static volatile java.lang.ref.WeakReference<View> sSearchTitleBarRef =
+            new java.lang.ref.WeakReference<>(null);
+
+    private static final java.util.Map<View, Boolean> sRepurposedTitleBars =
+            java.util.Collections.synchronizedMap(
+                    new java.util.WeakHashMap<View, Boolean>());
+
+    private static final java.util.Map<View, Boolean> sHiddenSearchIcons =
+            java.util.Collections.synchronizedMap(
+                    new java.util.WeakHashMap<View, Boolean>());
+
+    private static volatile int sSearchTabIndex = -1;
     private static volatile boolean sSyncing;
     private static volatile String sBuildSig = "";
+
+    private static final java.util.List<Integer> sAppliedOrder =
+            new java.util.ArrayList<>();
     private static android.animation.ValueAnimator sTabShiftAnimator;
     private static android.animation.ValueAnimator sBarWidthAnimator;
     private static android.animation.ValueAnimator sDropletSizeAnimator;
@@ -2469,6 +3295,9 @@ public final class LiquidGlassInstaller {
                     } else {
                         tint = GlassConfig.darkTint();
                     }
+
+                    int alpha = tint >>> 24;
+                    tint = ((alpha * 3 / 5) << 24) | (tint & 0x00FFFFFF);
                     if (!isBarView) {
                         int a = tint >>> 24;
                         int na = Math.round(a * 0.6f);
@@ -2489,7 +3318,46 @@ public final class LiquidGlassInstaller {
             java.util.Collections.synchronizedMap(
                     new java.util.WeakHashMap<View, Boolean>());
 
+    private static android.content.SharedPreferences.OnSharedPreferenceChangeListener sGlassPrefListener;
+
+    private static void installGlassPrefListener() {
+        try {
+            if (sGlassPrefListener != null) {
+                return;
+            }
+            android.content.SharedPreferences prefs = com.better.heybox.HeyboxPrefs.get();
+            if (prefs == null) {
+                return;
+            }
+            sGlassPrefListener = (sp, key) -> {
+                try {
+                    if (!isGlassPrefKey(key)) {
+                        return;
+                    }
+                    Activity main = mainActivity();
+                    if (main == null || main.getWindow() == null) {
+                        return;
+                    }
+                    main.getWindow().getDecorView().post(() -> refreshGlassWith(main));
+                } catch (Throwable ignored) {
+                }
+            };
+            prefs.registerOnSharedPreferenceChangeListener(sGlassPrefListener);
+            LiquidGlassLog.log(android.util.Log.INFO, "glass pref listener installed");
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("glass pref listener failed", t);
+        }
+    }
+
+    private static boolean isGlassPrefKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        return com.better.heybox.App.KEY_LIQUID_GLASS.equals(key) || key.startsWith("glass_");
+    }
+
     public static void installSettingsEntries(ClassLoader cl) {
+        installGlassPrefListener();
         try {
             Class<?> htb = Class.forName(
                     "com.max.hbcommon.component.HomeTitleBar", false, cl);
@@ -2497,16 +3365,47 @@ public final class LiquidGlassInstaller {
             LiquidGlassHookBridge.hookExecutable(g, chain -> {
                 Object r = chain.proceed();
                 try {
-                    if (r instanceof View && !sGlassEntries.containsKey(r)) {
+                    if (r instanceof View) {
                         View icon = (View) r;
-                        android.content.Context cx = icon.getContext();
-                        if (cx instanceof Activity && !GlassProvider.prefersHbmod(cx)) {
-                            sGlassEntries.put(icon, Boolean.TRUE);
-                            final Activity a = (Activity) cx;
-                            icon.setOnLongClickListener(v -> {
-                                GlassSettingsSheet.show(a);
-                                return true;
-                            });
+                        View titleBar = titleBarOf(icon);
+                        boolean repurposed =
+                                titleBar != null && isRepurposedTitleBar(titleBar);
+
+                        if (titleBar != null && !repurposed
+                                && isValidSearchIcon(icon, titleBar)) {
+                            sSearchTitleBarRef = new java.lang.ref.WeakReference<>(titleBar);
+                            sSearchIconRef = new java.lang.ref.WeakReference<>(icon);
+                            LiquidGlassLog.log(android.util.Log.INFO,
+                                    "search-tab: title-bar hook accepted icon #"
+                                            + icon.getId() + " in "
+                                            + titleBar.getClass().getName());
+                        } else {
+                            LiquidGlassLog.log(android.util.Log.DEBUG,
+                                    "search-tab: title-bar hook ignored (titleBar="
+                                            + (titleBar != null) + " repurposed="
+                                            + repurposed + " icon=" + icon.getClass()
+                                            .getName() + ")");
+                        }
+                        String chainLog = "";
+                        int depth = 0;
+                        for (View v = icon; v != null && depth < 10; depth++) {
+                            chainLog += v.getClass().getName() + "#" + v.getId()
+                                    + " < ";
+                            v = v.getParent() instanceof View ? (View) v.getParent() : null;
+                        }
+                        LiquidGlassLog.log(android.util.Log.DEBUG,
+                                "title-bar chain: " + chainLog);
+
+                        if (!repurposed && !sGlassEntries.containsKey(icon)) {
+                            android.content.Context cx = icon.getContext();
+                            if (cx instanceof Activity && !GlassProvider.prefersHbmod(cx)) {
+                                sGlassEntries.put(icon, Boolean.TRUE);
+                                final Activity a = (Activity) cx;
+                                icon.setOnLongClickListener(v -> {
+                                    GlassSettingsSheet.show(a);
+                                    return true;
+                                });
+                            }
                         }
                     }
                 } catch (Throwable ignored) {
@@ -2551,6 +3450,37 @@ public final class LiquidGlassInstaller {
                     "SettingActivity glass row hook installed");
         } catch (Throwable t) {
             LiquidGlassLog.logErr("SettingActivity entry hook failed", t);
+        }
+
+        try {
+            Class<?> mehome = Class.forName(
+                    "com.max.xiaoheihe.module.account.MehomefragmentV2", false, cl);
+            java.lang.reflect.Method installViews =
+                    mehome.getDeclaredMethod("installViews", View.class);
+            final java.lang.reflect.Field tbHome = mehome.getDeclaredField("tb_home");
+            try {
+                tbHome.setAccessible(true);
+            } catch (Throwable ignored) {
+            }
+            LiquidGlassHookBridge.hookExecutable(installViews, chain -> {
+                Object r = chain.proceed();
+                try {
+                    Object self = chain.getThisObject();
+                    Object tb = tbHome.get(self);
+                    if (tb instanceof View) {
+                        markRepurposedTitleBar((View) tb);
+                    }
+                } catch (Throwable t) {
+                    LiquidGlassLog.log(android.util.Log.DEBUG,
+                            "search-tab: mark mehome title bar failed: " + t);
+                }
+                return r;
+            });
+            LiquidGlassLog.log(android.util.Log.INFO,
+                    "search-tab: MehomefragmentV2 repurpose hook installed");
+        } catch (Throwable t) {
+            LiquidGlassLog.log(android.util.Log.DEBUG,
+                    "search-tab: MehomefragmentV2 hook unavailable: " + t);
         }
     }
 
@@ -2597,7 +3527,6 @@ public final class LiquidGlassInstaller {
         });
     }
 
-    /** 隐藏宿主自带的底栏上方渐变阴影，返回被隐藏的视图供卸载时还原 */
     private static View hideLegacyShadow(ViewGroup root, int barId) {
         for (int i = 0; i < root.getChildCount(); i++) {
             View child = root.getChildAt(i);
