@@ -35,6 +35,10 @@ public final class GlassSettingsSheet {
     }
 
     public static void show(Activity activity) {
+        show(activity, LiquidGlassInstaller.isMiuixEnabled(activity));
+    }
+
+    public static void show(Activity activity, boolean miuix) {
         try {
             View existing = activity.getWindow().getDecorView().findViewWithTag(SHEET_TAG);
             if (existing != null) {
@@ -64,13 +68,25 @@ public final class GlassSettingsSheet {
             GradientDrawable panelBg = new GradientDrawable();
             panelBg.setColor(pageBg);
             float r = 24f * density;
-            panelBg.setCornerRadii(new float[]{0, 0, 0, 0, r, r, r, r});
+            panelBg.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0});
             panel.setBackground(panelBg);
             panel.setElevation(0f);
+            panel.setClickable(true);
             panel.setPadding(0, (int) (14f * density), 0, (int) (12f * density));
 
+            View grabber = new View(activity);
+            GradientDrawable grabberBg = new GradientDrawable();
+            grabberBg.setColor(textSecondary);
+            grabberBg.setCornerRadius(2f * density);
+            grabber.setBackground(grabberBg);
+            LinearLayout.LayoutParams grabberLp = new LinearLayout.LayoutParams(
+                    (int) (36f * density), (int) (4f * density));
+            grabberLp.gravity = Gravity.CENTER_HORIZONTAL;
+            grabberLp.bottomMargin = (int) (8f * density);
+            panel.addView(grabber, grabberLp);
+
             TextView title = new TextView(activity);
-            title.setText("液态玻璃底栏");
+            title.setText(miuix ? "MIUIX 底栏外观" : "液态玻璃底栏外观");
             title.setTextColor(textPrimary);
             title.setTextSize(17f);
             title.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -97,36 +113,28 @@ public final class GlassSettingsSheet {
             scroller.addView(content, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-            content.addView(sectionLabel(activity, "开关", textSecondary, density));
-            content.addView(buildSwitchCard(activity, textPrimary, textSecondary,
-                    accent, divider, cardBg, density));
-            content.addView(sectionLabel(activity, "外观", textSecondary, density));
-            content.addView(buildLookCard(activity, textPrimary, textSecondary,
-                    accent, divider, cardBg, density));
-            content.addView(sectionLabel(activity, "布局", textSecondary, density));
-            content.addView(buildLayoutCard(activity, textPrimary, textSecondary,
-                    accent, divider, cardBg, density));
-            content.addView(buildResetCard(activity, cardBg, density));
+            content.addView(sectionLabel(activity, miuix ? "当前样式" : "外观",
+                    textSecondary, density));
+            if (miuix) {
+                content.addView(buildMiuixOverviewCard(activity, textPrimary,
+                        textSecondary, accent, divider, cardBg, density));
+            } else {
+                content.addView(buildLookCard(activity, textPrimary, textSecondary,
+                        accent, divider, cardBg, density));
+                content.addView(sectionLabel(activity, "布局", textSecondary, density));
+                content.addView(buildLayoutCard(activity, textPrimary, textSecondary,
+                        accent, divider, cardBg, density));
+                content.addView(buildResetCard(activity, cardBg, density));
+            }
 
             panel.addView(scroller, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-            View grabber = new View(activity);
-            GradientDrawable grabberBg = new GradientDrawable();
-            grabberBg.setColor(textSecondary);
-            grabberBg.setCornerRadius(2f * density);
-            grabber.setBackground(grabberBg);
-            LinearLayout.LayoutParams grabberLp = new LinearLayout.LayoutParams(
-                    (int) (36f * density), (int) (4f * density));
-            grabberLp.gravity = Gravity.CENTER_HORIZONTAL;
-            grabberLp.topMargin = (int) (8f * density);
-            panel.addView(grabber, grabberLp);
-
             FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP);
+                    Gravity.BOTTOM);
             overlay.addView(panel, panelLp);
-            panel.setTranslationY(-400f * density);
+            panel.setTranslationY(400f * density);
             overlay.post(() -> panel.animate().translationY(0).setDuration(220).start());
 
             overlay.setOnClickListener(v -> dismiss(activity));
@@ -136,46 +144,6 @@ public final class GlassSettingsSheet {
         } catch (Throwable t) {
             LiquidGlassLog.logErr("glass settings sheet failed", t);
         }
-    }
-
-    private static LinearLayout buildSwitchCard(Activity activity, int textPrimary, int textSecondary,
-                                                int accent, int divider, int cardBg, float density) {
-        LinearLayout switchCard = card(activity, cardBg, density);
-        switchCard.addView(switchRow(activity, "启用液态玻璃", "关闭后立即恢复经典底栏",
-                HeyboxPrefs.getBoolean(App.KEY_LIQUID_GLASS, true),
-                textPrimary, textSecondary, accent, density,
-                (buttonView, isChecked) -> {
-                    HeyboxPrefs.setBoolean(App.KEY_LIQUID_GLASS, isChecked);
-                    LiquidGlassInstaller.applyGlassEnabled(activity);
-                }));
-        switchCard.addView(divider(activity, divider, density));
-        switchCard.addView(switchRow(activity, "沉浸式小白条",
-                "玻璃条贴合屏幕底部，内容延伸至手势区",
-                GlassConfig.immersiveGestureNavigation, textPrimary, textSecondary, accent, density,
-                (buttonView, isChecked) -> {
-                    GlassConfig.immersiveGestureNavigation = isChecked;
-                    GlassConfig.save(activity);
-                    LiquidGlassInstaller.refreshGlassWith(activity);
-                }));
-        switchCard.addView(divider(activity, divider, density));
-        switchCard.addView(switchRow(activity, "自适应反色",
-                "标签文字随背景亮度切换黑白",
-                GlassConfig.adaptiveChrome, textPrimary, textSecondary, accent, density,
-                (buttonView, isChecked) -> {
-                    GlassConfig.adaptiveChrome = isChecked;
-                    GlassConfig.save(activity);
-                    LiquidGlassInstaller.refreshGlass();
-                }));
-        switchCard.addView(divider(activity, divider, density));
-        switchCard.addView(switchRow(activity, "加长选中 Tab",
-                "隐藏标签后选中项加长，底栏随可见数量收缩；建议隐藏加号后使用",
-                GlassConfig.fitTabs, textPrimary, textSecondary, accent, density,
-                (buttonView, isChecked) -> {
-                    GlassConfig.fitTabs = isChecked;
-                    GlassConfig.save(activity);
-                    LiquidGlassInstaller.syncTabVisibility();
-                }));
-        return switchCard;
     }
 
     private static LinearLayout buildLookCard(Activity activity, int textPrimary, int textSecondary,
@@ -205,6 +173,67 @@ public final class GlassSettingsSheet {
                     return value + "%";
                 }));
         return lookCard;
+    }
+
+    private static LinearLayout buildMiuixOverviewCard(Activity activity, int textPrimary,
+                                                       int textSecondary, int accent,
+                                                       int divider, int cardBg,
+                                                       float density) {
+        LinearLayout overview = card(activity, cardBg, density);
+        overview.addView(infoRow(activity, "磨砂模糊",
+                "低分辨率实时模糊与主题表面色混合，兼顾质感和流畅度",
+                "已启用", textPrimary, textSecondary, accent, density));
+        overview.addView(divider(activity, divider, density));
+        overview.addView(infoRow(activity, "贴底导航",
+                "整宽、非悬浮，并自动避让系统手势区域",
+                "固定", textPrimary, textSecondary, accent, density));
+        overview.addView(divider(activity, divider, density));
+        overview.addView(infoRow(activity, "选中状态",
+                "不显示水滴或胶囊遮罩，仅改变图标与文字颜色",
+                "强调色", textPrimary, textSecondary, accent, density));
+        return overview;
+    }
+
+    private static View infoRow(Activity activity, String titleText, String desc,
+                                String valueText, int textPrimary, int textSecondary,
+                                int accent, float density) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, (int) (14f * density), 0, (int) (14f * density));
+
+        LinearLayout text = new LinearLayout(activity);
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(activity);
+        title.setText(titleText);
+        title.setTextColor(textPrimary);
+        title.setTextSize(15f);
+        text.addView(title);
+        TextView subtitle = new TextView(activity);
+        subtitle.setText(desc);
+        subtitle.setTextColor(textSecondary);
+        subtitle.setTextSize(12f);
+        subtitle.setPadding(0, (int) (2f * density), 0, 0);
+        text.addView(subtitle);
+        row.addView(text, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView value = new TextView(activity);
+        value.setText(valueText);
+        value.setTextColor(accent);
+        value.setTextSize(12f);
+        value.setGravity(Gravity.CENTER);
+        GradientDrawable chip = new GradientDrawable();
+        chip.setColor((accent & 0x00FFFFFF) | 0x18000000);
+        chip.setCornerRadius(12f * density);
+        value.setBackground(chip);
+        value.setPadding((int) (9f * density), (int) (4f * density),
+                (int) (9f * density), (int) (4f * density));
+        LinearLayout.LayoutParams valueLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        valueLp.leftMargin = (int) (12f * density);
+        row.addView(value, valueLp);
+        return row;
     }
 
     private static LinearLayout buildLayoutCard(Activity activity, int textPrimary, int textSecondary,

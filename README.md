@@ -18,7 +18,7 @@
 > 本项目授权条款以 [`LICENSE`](LICENSE)为准，
 
 > [!Note]
->本应用最低兼容 [小黑盒 1.3.396](https://github.com/Mrmiaomrzh/HeyboxAPK/releases) 版本（推荐 1.3.397-1138），更低版本出现的问题不会进行处理
+>本应用最低兼容 [小黑盒 1.3.396](https://github.com/Mrmiaomrzh/HeyboxAPK/releases) 版本（推荐 1.3.398-1142），更低版本出现的问题不会进行处理
 
 > [!WARNING]
 > 使用免Root框架`「NPatch」`时，需要把`破解签名校验`改成`Extreme`，不然会有缺少参数闪退的问题
@@ -100,7 +100,8 @@
 
 | 功能 | 说明 |
 |------|------|
-| 液态玻璃底栏 | 实时折射 / 色散玻璃底栏，水滴选中动画、沉浸式小白条、颜色随背景自适应；长按首页标题栏右上角图标或设置页「通用设置」行打开调节面板（底色 / 不透明度 / 高度 / 距底偏移 / 宽度 / Tab 宽度 / 形态）；Android 12 及以下回退毛玻璃；可切「Miuix 风格玻璃」改用 HyperOS 观感管线，另可选「搜索并入底栏」（顶栏 🔍 收进底栏）与「顶栏羽化玻璃」（标题栏磨砂 + 底边羽化） |
+| 液态玻璃底栏 | 实时折射 / 色散玻璃底栏，水滴选中动画、沉浸式小白条、颜色随背景自适应；可调底色 / 不透明度 / 高度 / 距底偏移 / 宽度 / Tab 宽度 / 形态，并支持「搜索并入底栏」与「顶栏羽化玻璃」 |
+| MIUIX 底栏 | 独立开关，与液态玻璃互斥；参考 SukiSU 的非悬浮 NavigationBar，整宽贴底、内容区自动避让，并使用磨砂背景与轻量选中高亮；不启用液态玻璃水滴与折射效果 |
 | 液态玻璃提供方 | 与独立的「小黑盒液态玻璃」模块共存时可选由谁提供，避免两条玻璃叠加 |
 | 底部导航栏隐藏 | 隐藏底栏 tab 项（需重启小黑盒）；剩余 tab 自动等分，选中项被隐藏时自动切换 |
 | 屏蔽双列信息流 | 实验性，仅 1.3.394以上；首页推荐 / 话题 / 百科恢复单列 |
@@ -317,10 +318,13 @@ app/src/main/resources/META-INF/xposed/
    - Windows：`gradlew.bat assembleDebug`
    - 命令行/CI：`./gradlew assembleDebug`
    - 或 Android Studio `Build > Make Project`
-   - 产物：`app/build/outputs/apk/debug/app-debug.apk`
+   - 标准版：`app/build/outputs/apk/standard/debug/app-standard-debug.apk`
+   - 共存版：`app/build/outputs/apk/parallel/debug/app-parallel-debug.apk`
 3. **刷入**：
    - 模拟器/真机需 **支持 API 102 的 LSPosed 框架**
    - 安装 APK → LSPosed Manager 启用模块。
+   - 标准版包名为 `com.better.heybox`，共存版包名为 `com.better.heybox.parallel`，两者可以同时安装
+   - 两个模块会 Hook 同一个小黑盒进程；请在 LSPosed 中同一时间只启用其中一个
    - 重启小黑盒进程
 4. **查看日志**：`adb logcat -s BetterHeybox`；也可在小黑盒设置面板开启「记录日志」，日志自动写入文件便于离线排查
 

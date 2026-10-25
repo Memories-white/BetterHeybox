@@ -70,7 +70,8 @@ public class MainModule extends XposedModule {
     public static final Set<String> SUPPORTED_HEYBOX_VERSIONS =
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "1.3.396",
-                    "1.3.397"
+                    "1.3.397",
+                    "1.3.398"
             )));
 
     @Override
@@ -223,7 +224,7 @@ public class MainModule extends XposedModule {
         registerHook("底部导航", new BottomTabHook(this)::install, cl,
                 App.KEY_HIDE_TAB_HOME, App.KEY_HIDE_TAB_HOT, App.KEY_HIDE_TAB_GAME, App.KEY_HIDE_ADD);
         registerHook("液态玻璃底栏", new LiquidGlassBottomBarHook(this)::install, cl,
-                App.KEY_LIQUID_GLASS, App.KEY_GLASS_IMMERSIVE);
+                App.KEY_LIQUID_GLASS, App.KEY_MIUIX_BOTTOM_BAR, App.KEY_GLASS_IMMERSIVE);
         registerHook("推广贴", new PromotePostHook(this)::install, cl, App.KEY_PROMOTE_AD);
         registerHook("首页广告横幅", new FeedBannerHook(this)::install, cl, App.KEY_PROMOTE_AD);
         registerHook("发帖过滤", postFilter::install, cl,

@@ -16,7 +16,7 @@ import android.view.ViewTreeObserver;
 
 final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
 
-    private static final long CAPTURE_INTERVAL_MS = 120L;
+    private static final long CAPTURE_INTERVAL_MS = 32L;
 
     private static final long RETRY_INTERVAL_MS = 200L;
 
@@ -26,23 +26,17 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
     private static final boolean DEBUG_APPEARANCE = false;
 
     private static final int OVER_LIGHT_LUMA = 150;
-    private static final float BACKDROP_SCALE = 1.0f;
+    // SukiSU uses a GPU texture blur. This View-based port keeps the same
+    // frosted look with a small backdrop buffer so updates stay inexpensive.
+    private static final float BACKDROP_SCALE = 0.20f;
 
-    private static final int GLASS_ALPHA = 168;
+    private static final int GLASS_ALPHA = 255;
+    private static final int SURFACE_BLEND_ALPHA = 208;
 
-    private static final int LIGHT_TINT = 0x24FFFFFF;
-    private static final int DARK_TINT = 0x24101214;
-
-    private static final int FALLBACK_DARK = 0x38000000;
-    private static final int FALLBACK_LIGHT = 0x40FFFFFF;
-
-    private static final boolean PILL_BELOW_DROPLET = true;
+    private static final int FALLBACK_DARK = 0xFF1C1C1E;
+    private static final int FALLBACK_LIGHT = 0xFFF7F7F8;
 
     private final float mDensity;
-
-    private final GlassSelectionPill mPill = new GlassSelectionPill();
-
-    private boolean mPillBroken;
 
     private final RectF mBounds = new RectF();
 
@@ -50,6 +44,7 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
     private final Paint mGlassPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mFallbackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mTopDividerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private boolean mUseAboveOnly;
     private Bitmap mBackdrop;
@@ -69,6 +64,7 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
     private int mLogs;
 
     private ViewTreeObserver.OnPreDrawListener mPreDrawListener;
+    private View mInheritedLiquidDroplet;
 
     MiuixGlassTabBar(Context context) {
         super(context, null, 0);
@@ -81,55 +77,40 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
         }
         mDark = initialDarkGuess();
         applyFallbackColor();
-        mPill.setDensity(mDensity);
-        reloadPillConfig();
+        suppressInheritedLiquidDroplet();
     }
 
     private boolean initialDarkGuess() {
         try {
-            int darkAlpha = Color.alpha(GlassConfig.darkTint());
-            int lightAlpha = Color.alpha(GlassConfig.lightTint());
-            if (darkAlpha > lightAlpha + 24) {
-                return true;
-            }
+            int mode = getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            return mode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         } catch (Throwable ignored) {
+            return false;
         }
-        return false;
     }
 
     private void applyFallbackColor() {
-        int color;
+        int color = mDark ? FALLBACK_DARK : FALLBACK_LIGHT;
         try {
-            color = mDark ? GlassConfig.darkTint() : GlassConfig.lightTint();
-        } catch (Throwable t) {
-            color = 0;
-        }
-        if (Color.alpha(color) == 0) {
-            color = mDark ? FALLBACK_DARK : FALLBACK_LIGHT;
+            color = com.better.heybox.ThemeUtils.surfaceColor(getContext());
+        } catch (Throwable ignored) {
         }
         mFallbackPaint.setColor(color);
-        mFallbackPaint.setAlpha(Math.min(Color.alpha(color), 0x99));
+        mFallbackPaint.setAlpha(255);
     }
 
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        suppressInheritedLiquidDroplet();
         if (mPreDrawListener == null) {
             mPreDrawListener = () -> {
-
-                if (mPill.pollSelection(this)) {
-                    reloadPillConfig();
-                    postInvalidateOnAnimation();
-                }
                 maybeCapture();
                 return true;
             };
             getViewTreeObserver().addOnPreDrawListener(mPreDrawListener);
         }
-
-        mPill.reset();
-        reloadPillConfig();
-
         resetCaptureState();
     }
 
@@ -155,18 +136,15 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
             }
             mPreDrawListener = null;
         }
-        mPill.reset();
         super.onDetachedFromWindow();
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
+        suppressInheritedLiquidDroplet();
         mBounds.set(0f, 0f, w, h);
-        mRadius = LiquidGlassInstaller.barCornerRadiusPx(h, mDensity);
-        ensureBackdrop(w, h);
-        mPill.reset();
-
+        mRadius = 0f;
         resetCaptureState();
     }
 
@@ -205,7 +183,6 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
             return;
         }
 
-        reloadPillConfig();
         mLastCaptureAt = now;
         mCapturing = true;
         try {
@@ -261,7 +238,10 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
             int above = lumaAbove();
             mDark = above <= OVER_LIGHT_LUMA;
             applyFallbackColor();
-            MiuixGlassPipeline.process(mBackdrop, mDensity, mDark);
+            // The buffer is already downsampled to 20%; a small stack blur is
+            // visually equivalent to a much larger screen-space blur without
+            // the costly full-resolution refraction pipeline.
+            StackBlur.blur(mBackdrop, 4);
             mHasBackdrop = true;
             mCaptureFailures = 0;
             mTriedRootFallback = false;
@@ -453,70 +433,66 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
 
     @Override
     protected void onDraw(Canvas canvas) {
-
+        mDark = initialDarkGuess();
+        applyFallbackColor();
         if (mHasBackdrop && mBackdrop != null && !mBackdrop.isRecycled()) {
-            int bw = mBackdrop.getWidth();
-            int bh = mBackdrop.getHeight();
-            if (mUseAboveOnly && bh > getHeight() && getHeight() > 0) {
-
-                BitmapShader shader = new BitmapShader(
-                        mBackdrop, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
-
-                mShaderMatrix.setScale(getWidth() / (float) bw, 1f);
-                shader.setLocalMatrix(mShaderMatrix);
-                mGlassPaint.setShader(shader);
-            } else {
-                BitmapShader shader = new BitmapShader(
-                        mBackdrop, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
-                mShaderMatrix.setScale(getWidth() / (float) bw, getHeight() / (float) bh);
-                shader.setLocalMatrix(mShaderMatrix);
-                mGlassPaint.setShader(shader);
-            }
-
             mGlassPaint.setAlpha(GLASS_ALPHA);
-            canvas.drawRoundRect(mBounds, mRadius, mRadius, mGlassPaint);
-            mGlassPaint.setShader(null);
-            mTintPaint.setColor(mDark ? DARK_TINT : LIGHT_TINT);
-            mTintPaint.setAlpha(Color.alpha(mTintPaint.getColor()));
-            canvas.drawRoundRect(mBounds, mRadius, mRadius, mTintPaint);
+            mGlassPaint.setFilterBitmap(true);
+            canvas.drawBitmap(mBackdrop, null, mBounds, mGlassPaint);
+
+            int surface = mDark ? FALLBACK_DARK : FALLBACK_LIGHT;
+            try {
+                surface = com.better.heybox.ThemeUtils.surfaceColor(getContext());
+            } catch (Throwable ignored) {
+            }
+            mTintPaint.setColor(surface);
+            mTintPaint.setAlpha(SURFACE_BLEND_ALPHA);
+            canvas.drawRect(mBounds, mTintPaint);
             mTintPaint.setAlpha(255);
         } else {
-            canvas.drawRoundRect(mBounds, mRadius, mRadius, mFallbackPaint);
+            canvas.drawRect(mBounds, mFallbackPaint);
         }
-        MiuixGlassPipeline.drawEdgeHighlight(canvas, mBounds, mRadius, mDensity, mDark);
-        if (PILL_BELOW_DROPLET) {
-            drawSelectionPill(canvas);
-        }
+        mTopDividerPaint.setColor(mDark ? 0x24FFFFFF : 0x18000000);
+        mTopDividerPaint.setStrokeWidth(Math.max(1f, 0.5f * mDensity));
+        canvas.drawLine(0f, 0f, getWidth(), 0f, mTopDividerPaint);
     }
 
     @Override
     protected void dispatchDraw(Canvas canvas) {
-        if (!PILL_BELOW_DROPLET) {
-            drawSelectionPill(canvas);
-        }
+        suppressInheritedLiquidDroplet();
         super.dispatchDraw(canvas);
     }
 
-    private void drawSelectionPill(Canvas canvas) {
-        if (mPillBroken) {
-            return;
-        }
+    /**
+     * The superclass is retained only for its tab bookkeeping API. Its private
+     * liquid selection droplet must never participate in MIUIX rendering.
+     */
+    private void suppressInheritedLiquidDroplet() {
         try {
-            if (mPill.draw(canvas, this, mDark)) {
-
-                postInvalidateOnAnimation();
+            View droplet = mInheritedLiquidDroplet;
+            if (droplet == null) {
+                java.lang.reflect.Field field =
+                        com.example.liquidglass.LiquidGlassTabBar.class
+                                .getDeclaredField("droplet");
+                field.setAccessible(true);
+                Object value = field.get(this);
+                if (value instanceof View) {
+                    droplet = (View) value;
+                    mInheritedLiquidDroplet = droplet;
+                }
+            }
+            if (droplet != null) {
+                droplet.animate().cancel();
+                droplet.setAlpha(0f);
+                droplet.setVisibility(View.GONE);
+                droplet.setEnabled(false);
+                droplet.setClickable(false);
             }
         } catch (Throwable t) {
-            mPillBroken = true;
-            LiquidGlassLog.logErr("miuix tabbar selection pill failed", t);
+            if (mLogs++ < 1) {
+                LiquidGlassLog.logErr("miuix failed to suppress inherited liquid droplet", t);
+            }
         }
     }
 
-    private void reloadPillConfig() {
-        try {
-            mPill.reloadConfig();
-        } catch (Throwable t) {
-            LiquidGlassLog.logErr("miuix tabbar pill config failed", t);
-        }
-    }
 }

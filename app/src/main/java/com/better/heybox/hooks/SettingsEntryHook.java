@@ -141,7 +141,7 @@ private void showTargetStatus(Activity activity) {
 
     public enum Action {
         NONE, EDIT_LINK, CLEAR_DAILY, CHANNEL, EXPORT, IMPORT,
-        EXPORT_LOG, CLEAR_LOG, VIEW_LOG, RUNTIME_STATUS, TARGET_STATUS, OPEN_WEB, PICK_DIR, RESET_GLASS, CHOOSE_GLASS,GLASS_SHEET,
+        EXPORT_LOG, CLEAR_LOG, VIEW_LOG, RUNTIME_STATUS, TARGET_STATUS, OPEN_WEB, PICK_DIR, RESET_GLASS, CHOOSE_GLASS, CHOOSE_BOTTOM_BAR, GLASS_SHEET, MIUIX_SHEET,
         TEST_CRASH,
         POST_LEVEL, POST_KEYWORDS, POST_TAGS, COMMENT_KEYWORDS, COMMENT_FILTER_DIAG, AI_PROVIDER, AI_PROMPT, AI_TEST, AI_MAX_TOKENS,
         POST_MIN_LIKE, POST_MIN_COMMENT, POST_MIN_FAVOUR,
@@ -440,7 +440,7 @@ private void showTargetStatus(Activity activity) {
                 entry(PAGE_ADS, "广告与内容过滤",
                         "广告、推广贴、发帖过滤、评论过滤、搜索 / 游戏库精简、分享净化"),
                 entry(PAGE_UI, "界面与外观",
-                        "液态玻璃、底栏隐藏、单列信息流"),
+                        "底栏样式、导航隐藏、单列信息流"),
                 entry(PAGE_BROWSE, "浏览与下载",
                         "解除复制、评论交互、链接重定向、视频下载、截图功能"),
                 entry(PAGE_WATCH, "动态推送",
@@ -501,10 +501,7 @@ private void showTargetStatus(Activity activity) {
             return groups;
         }
         if (PAGE_UI.equals(pageId)) {
-            SettingsGroup glass = buildGlassGroup(activity);
-            if (glass != null) {
-                groups.add(glass);
-            }
+            groups.add(buildBottomBarStyleGroup(activity));
             groups.add(buildBottomTabGroup(activity));
             groups.add(buildMessageRedDotGroup());
             if (VersionUtils.isHeyboxBuildAtLeast(activity, EXPERIMENTAL_HEYBOX_VERSION,
@@ -1219,19 +1216,31 @@ private static SettingsGroup withExtraRows(SettingsGroup g, SwitchDef[] extra) {
         return count;
     }
 
-    private SettingsGroup buildGlassGroup(Activity activity) {
+    private SettingsGroup buildBottomBarStyleGroup(Activity activity) {
+        boolean miuix = LiquidGlassInstaller.isMiuixEnabled(activity);
+        boolean liquid = LiquidGlassInstaller.isLiquidGlassEnabled(activity) && !miuix;
         boolean switchable = GlassProvider.isHbmodInstalled(activity)
                 || GlassProvider.prefersHbmod(module);
         boolean ownGlass = !GlassProvider.prefersHbmod(module);
         List<SwitchDef> rows = new ArrayList<>();
-        if (switchable) {
-            String label = GlassProvider.providerLabel(
-                    module.getString(App.KEY_GLASS_PROVIDER, ""));
+        String current = miuix ? "MIUIX 磨砂" : (liquid ? "液态玻璃" : "小黑盒原版");
+        rows.add(new SwitchDef("底栏样式", "当前：" + current,
+                null, false, false, true, null, Action.CHOOSE_BOTTOM_BAR));
+        if (liquid && switchable) {
+            String label = selectedGlassProviderLabel();
             rows.add(new SwitchDef("液态玻璃提供方",
                     "当前：" + label, null, false, false, true, null, Action.CHOOSE_GLASS));
         }
-        if (ownGlass) {
-            rows.add(new SwitchDef("液态玻璃底栏", "底栏显示液态玻璃", App.KEY_LIQUID_GLASS, true, false));
+        if (miuix) {
+            rows.add(new SwitchDef("MIUIX 样式说明",
+                    "磨砂模糊、整宽贴底；选中项仅改变图标和文字颜色",
+                    null, false, false, true, null, Action.MIUIX_SHEET));
+            rows.add(new SwitchDef("沉浸式手势区域", "底栏延伸至底部手势区域",
+                    App.KEY_GLASS_IMMERSIVE, true, false));
+            rows.add(new SwitchDef("搜索并入底栏",
+                    "隐藏顶栏搜索按钮，在底栏右端显示搜索入口",
+                    App.KEY_GLASS_SEARCH_IN_BAR, false, false));
+        } else if (liquid && ownGlass) {
             rows.add(new SwitchDef("沉浸式小白条", "底栏延伸至手势区域", App.KEY_GLASS_IMMERSIVE, true, false));
             rows.add(new SwitchDef("自适应反色", "文字图标随背景反色", App.KEY_GLASS_ADAPTIVE, true, false));
             rows.add(new SwitchDef("搜索并入底栏",
@@ -1240,21 +1249,12 @@ private static SettingsGroup withExtraRows(SettingsGroup g, SwitchDef[] extra) {
             rows.add(new SwitchDef("加长选中 Tab",
                     "隐藏标签后选中项加长，底栏随可见数量收缩",
                     App.KEY_GLASS_FIT_TABS, false, false));
-            rows.add(new SwitchDef("玻璃条宽度",
-                    "宽度模式 / 左右边距 / Tab 宽度，打开调节面板",
+            rows.add(new SwitchDef("液态玻璃外观调节",
+                    "液态玻璃颜色、宽度与形态",
                     null, false, false, true, null, Action.GLASS_SHEET));
-            rows.add(new SwitchDef("暗色模式底色", "例如 #000000", null, false, false, true, App.KEY_GLASS_DARK_COLOR));
-            rows.add(new SwitchDef("暗色模式不透明度", "5-98 的百分比", null, false, false, true, App.KEY_GLASS_DARK_ALPHA));
-            rows.add(new SwitchDef("亮色模式底色", "例如 #FFFFFF", null, false, false, true, App.KEY_GLASS_LIGHT_COLOR));
-            rows.add(new SwitchDef("亮色模式不透明度", "5-98 的百分比", null, false, false, true, App.KEY_GLASS_LIGHT_ALPHA));
-            rows.add(new SwitchDef("玻璃条高度", "0 自动，或 51-99 dp", null, false, false, true, App.KEY_GLASS_BAR_HEIGHT));
-            rows.add(new SwitchDef("距屏幕底部", "0-40 dp", null, false, false, true, App.KEY_GLASS_BAR_OFFSET));
             rows.add(new SwitchDef("恢复液态玻璃默认设置", "恢复默认外观与布局", null, false, false, true, null, Action.RESET_GLASS));
         }
-        if (rows.isEmpty()) {
-            return null;
-        }
-        return new SettingsGroup("液态玻璃", rows.toArray(new SwitchDef[0]));
+        return new SettingsGroup("底栏外观", rows.toArray(new SwitchDef[0]));
     }
 
     private static void addRuntimeStatusRow(List<SettingsGroup> groups) {
@@ -1311,7 +1311,10 @@ private static SettingsGroup withExtraRows(SettingsGroup g, SwitchDef[] extra) {
         }
     }
 
-    private static final String[] SETUP_METHOD_CANDIDATES = {"N1", "L1", "G1", "S1", "U1"};
+    private static final String[] SETUP_METHOD_CANDIDATES = {
+            "J3", // 1.3.398 (1142): onResume() 调用的设置刷新方法
+            "N1", "L1", "G1", "S1", "U1"
+    };
 
     private Method findSetupMethod(Class<?> clazz) {
         for (String name : SETUP_METHOD_CANDIDATES) {
@@ -2029,27 +2032,59 @@ private void showCommentKeywordsDialog(Activity activity) {
     private EditText buildPanelSearchBox(Activity activity) {
         EditText input = new EditText(activity);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 40));
-        int margin = module.dp(activity, 12);
-        lp.setMargins(margin, module.dp(activity, 8), margin, 0);
+                ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 46));
+        int margin = module.dp(activity, 14);
+        lp.setMargins(margin, module.dp(activity, 10), margin, module.dp(activity, 4));
         input.setLayoutParams(lp);
         input.setSingleLine(true);
-        input.setHint("搜索设置项");
+        input.setHint("搜索全部设置");
         input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         input.setInputType(InputType.TYPE_CLASS_TEXT);
         input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
-        int bgId = hostResId(activity, "bg_dialog_edit", "drawable", 0);
-        if (bgId != 0) {
-            input.setBackgroundResource(bgId);
-        }
-        int textColor = hostColor(activity, "color_text_primary_day_night", 0);
-        if (textColor != 0) {
-            input.setTextColor(textColor);
-        }
-        input.setHintTextColor(hostColor(activity, "color_text_tertiary_day_night", 0xFF8A8A8A));
-        int pad = module.dp(activity, 10);
+        input.setTextColor(ThemeUtils.textPrimaryColor(activity));
+        input.setHintTextColor(ThemeUtils.textSecondaryColor(activity));
+        android.graphics.drawable.GradientDrawable searchBg =
+                new android.graphics.drawable.GradientDrawable();
+        searchBg.setColor(ThemeUtils.surfaceColor(activity));
+        searchBg.setCornerRadius(module.dp(activity, 16));
+        searchBg.setStroke(Math.max(1, module.dp(activity, 1)),
+                ThemeUtils.outlineColor(activity));
+        input.setBackground(searchBg);
+        int pad = module.dp(activity, 16);
         input.setPadding(pad, 0, pad, 0);
+        input.setElevation(module.dp(activity, 1));
         return input;
+    }
+
+    private View buildPanelSummary(Activity activity, String title,
+                                   List<SettingsGroup> groups) {
+        TextView summary = new TextView(activity);
+        String description;
+        if ("BetterHeybox 设置".equals(title)) {
+            description = "按功能分类管理增强选项";
+        } else if ("广告与内容过滤".equals(title)) {
+            description = "过滤广告、推广和不需要展示的内容";
+        } else if ("界面与外观".equals(title)) {
+            description = "调整底栏、导航入口和信息流布局";
+        } else if ("浏览与下载".equals(title)) {
+            description = "管理复制、分享、下载与截图体验";
+        } else if ("动态推送".equals(title)) {
+            description = "配置关注对象、关键词和推送检查";
+        } else if ("每日任务".equals(title)) {
+            description = "管理任务执行与完成状态";
+        } else {
+            description = "模块运行、备份恢复与高级选项";
+        }
+        summary.setText(description + "  ·  " + countGroupsItems(groups) + " 项");
+        summary.setTextColor(ThemeUtils.textSecondaryColor(activity));
+        summary.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        summary.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(module.dp(activity, 16), module.dp(activity, 5),
+                module.dp(activity, 16), 0);
+        summary.setLayoutParams(lp);
+        return summary;
     }
 
     private List<SettingsGroup> searchIndex(Activity activity) {
@@ -2113,12 +2148,14 @@ private void showCommentKeywordsDialog(Activity activity) {
             TextView tip = new TextView(activity);
             tip.setText(shown.isEmpty() ? "没有匹配的设置项"
                     : "找到 " + countGroupsItems(shown) + " 项");
-            tip.setTextSize(TypedValue.COMPLEX_UNIT_PX, module.dp(activity, 13));
-            tip.setTextColor(hostColor(activity, "color_text_tertiary_day_night", 0xFF8A8A8A));
+            tip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            tip.setTextColor(shown.isEmpty() ? ThemeUtils.textSecondaryColor(activity)
+                    : ThemeUtils.resolveAccent(activity));
+            tip.setGravity(Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams tipLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            int tm = module.dp(activity, 12);
-            tipLp.setMargins(tm, module.dp(activity, 12), tm, 0);
+            int tm = module.dp(activity, 16);
+            tipLp.setMargins(tm, module.dp(activity, 12), tm, module.dp(activity, 2));
             tip.setLayoutParams(tipLp);
             box.addView(tip);
         }
@@ -2136,8 +2173,8 @@ private void showCommentKeywordsDialog(Activity activity) {
         try {
             dismissEmbeddedSettings();
             HeyboxPrefs.init(activity);
-            int appbarBg = hostColor(activity, "appbar_bg_color", 0xFFFFFFFF);
-            int pageBg = hostColor(activity, "color_bg_subtle_day_night", 0xFFFFFFFF);
+            int appbarBg = ThemeUtils.surfaceColor(activity);
+            int pageBg = ThemeUtils.surfaceVariantColor(activity);
 
             int statusBarH = 0;
             try {
@@ -2178,10 +2215,13 @@ private void showCommentKeywordsDialog(Activity activity) {
             page.addView(statusSpacer);
             ClassLoader cl = activity.getClassLoader();
             page.addView(buildEmbeddedTitleBar(activity, cl, appbarBg, title, onBack));
+            page.addView(buildPanelSummary(activity, title, groups));
             mSearchIndex = null;
             final EditText searchBox = buildPanelSearchBox(activity);
             page.addView(searchBox);
             ScrollView scroller = new ScrollView(activity);
+            scroller.setVerticalScrollBarEnabled(false);
+            scroller.setOverScrollMode(View.OVER_SCROLL_NEVER);
             scroller.setLayoutParams(new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
             LinearLayout box = new LinearLayout(activity);
@@ -2247,7 +2287,7 @@ private void showCommentKeywordsDialog(Activity activity) {
         };
         titleBarCls.getMethod("setNavigationOnClickListener", ocl).invoke(titleBar, backListener);
         ((View) titleBar).setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 44)));
+                ViewGroup.LayoutParams.MATCH_PARENT, module.dp(activity, 50)));
         return (View) titleBar;
     }
 
@@ -2488,14 +2528,14 @@ private void showCommentKeywordsDialog(Activity activity) {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             TextView groupTitle = new TextView(activity);
             groupTitle.setText(group.title);
-            int titleSize = module.dp(activity, 13);
-            groupTitle.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, titleSize);
-            groupTitle.setTextColor(hostColor(activity, "color_text_tertiary_day_night", 0xFF8A8A8A));
+            groupTitle.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13);
+            groupTitle.setTextColor(ThemeUtils.textSecondaryColor(activity));
+            groupTitle.setTypeface(null, android.graphics.Typeface.BOLD);
             groupTitle.setGravity(android.view.Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            int tm = module.dp(activity, 12);
-            titleLp.setMargins(tm, module.dp(activity, 16), tm, 0);
+            int tm = module.dp(activity, 16);
+            titleLp.setMargins(tm, module.dp(activity, 18), tm, module.dp(activity, 2));
             groupTitle.setLayoutParams(titleLp);
             groupRoot.addView(groupTitle);
             Object[] cardPair = buildHostCard(activity, cl);
@@ -2605,11 +2645,17 @@ private void showCommentKeywordsDialog(Activity activity) {
                     case CHOOSE_GLASS:
                         setRowClick(itemCls, item, v -> showGlassProviderDialog(activity));
                         break;
+                    case CHOOSE_BOTTOM_BAR:
+                        setRowClick(itemCls, item, v -> showBottomBarStyleDialog(activity));
+                        break;
                     case POST_LEVEL:
                         setRowClick(itemCls, item, v -> showPostLevelDialog(activity));
                         break;
                     case GLASS_SHEET:
-                        setRowClick(itemCls, item, v -> GlassSettingsSheet.show(activity));
+                        setRowClick(itemCls, item, v -> GlassSettingsSheet.show(activity, false));
+                        break;
+                    case MIUIX_SHEET:
+                        setRowClick(itemCls, item, v -> GlassSettingsSheet.show(activity, true));
                         break;
                     case POST_MIN_LIKE:
                         setRowClick(itemCls, item, v -> showPostCountDialog(activity,
@@ -2832,10 +2878,6 @@ private void showCommentKeywordsDialog(Activity activity) {
                             TextSelectHook.refresh();
                         }
 
-                        if (App.KEY_LIQUID_GLASS.equals(def.key)) {
-                            LiquidGlassInstaller.applyGlassEnabled(activity);
-                        }
-
                         if (App.KEY_GLASS_IMMERSIVE.equals(def.key)) {
                             LiquidGlassInstaller.refreshGlassWith(activity);
                         }
@@ -2852,6 +2894,14 @@ private void showCommentKeywordsDialog(Activity activity) {
                         }
                         if (!mutexApplying) {
                             applySwitchMutex(activity, def.key, isChecked);
+                        }
+                        if (App.KEY_LIQUID_GLASS.equals(def.key)
+                                || App.KEY_MIUIX_BOTTOM_BAR.equals(def.key)) {
+                            if (isChecked) {
+                                LiquidGlassInstaller.applyGlassStyle(activity);
+                            } else {
+                                LiquidGlassInstaller.applyGlassEnabled(activity);
+                            }
                         }
                     } catch (Throwable t) {
                         module.logd(Log.ERROR, module.TAG, "开关监听回调异常: " + def.title, t);
@@ -2903,6 +2953,10 @@ private void showCommentKeywordsDialog(Activity activity) {
             }
         } else if (App.KEY_BROWSER_REDIRECT_KNOWN.equals(key) && checked) {
             setSwitchPref(activity, App.KEY_BROWSER_REDIRECT, true);
+        } else if (App.KEY_LIQUID_GLASS.equals(key) && checked) {
+            setSwitchPref(activity, App.KEY_MIUIX_BOTTOM_BAR, false);
+        } else if (App.KEY_MIUIX_BOTTOM_BAR.equals(key) && checked) {
+            setSwitchPref(activity, App.KEY_LIQUID_GLASS, false);
         }
     }
 
@@ -3078,10 +3132,77 @@ private void showCommentKeywordsDialog(Activity activity) {
     private static final String[] SHARE_CHANNELS = {"QQ", "WECHAT", "WEIBO"};
     private static final String[] SHARE_CHANNEL_LABELS = {"QQ / QQ空间", "微信 / 朋友圈", "微博"};
 
-    private static final String[] GLASS_PROVIDER_VALUES = {
-            GlassProvider.PROVIDER_OWN, GlassProvider.PROVIDER_HBMOD};
+    private static final String[] BOTTOM_BAR_STYLE_LABELS = {
+            "小黑盒原版",
+            "液态玻璃",
+            "MIUIX 磨砂"
+    };
+
+    private int selectedBottomBarStyle(Activity activity) {
+        if (LiquidGlassInstaller.isMiuixEnabled(activity)) {
+            return 2;
+        }
+        return LiquidGlassInstaller.isLiquidGlassEnabled(activity) ? 1 : 0;
+    }
+
+    private void showBottomBarStyleDialog(final Activity activity) {
+        withHeyboxDialog(activity,
+                spec -> showBottomBarStyleDialogNative(activity, spec),
+                () -> showBottomBarStyleDialogFallback(activity));
+    }
+
+    private void showBottomBarStyleDialogNative(final Activity activity,
+                                                DexKitResolver.HeyboxDialogSpec spec)
+            throws Exception {
+        int checked = selectedBottomBarStyle(activity);
+        LinearLayout list = buildOptionRowList(activity, BOTTOM_BAR_STYLE_LABELS, checked);
+        Dialog dialog = spec.buildAndShow(activity, "选择底栏样式", list, null, null,
+                "取消", (d, w) -> d.dismiss());
+        bindOptionRows(dialog, list, index -> chooseBottomBarStyle(activity, index));
+    }
+
+    private void showBottomBarStyleDialogFallback(final Activity activity) {
+        showSingleChoiceFallback(activity, "选择底栏样式", BOTTOM_BAR_STYLE_LABELS,
+                selectedBottomBarStyle(activity),
+                index -> chooseBottomBarStyle(activity, index));
+    }
+
+    private void chooseBottomBarStyle(Activity activity, int option) {
+        int selected = Math.max(0, Math.min(option, BOTTOM_BAR_STYLE_LABELS.length - 1));
+        boolean liquid = selected == 1;
+        boolean miuix = selected == 2;
+        setSwitchPref(activity, App.KEY_LIQUID_GLASS, liquid);
+        setSwitchPref(activity, App.KEY_MIUIX_BOTTOM_BAR, miuix);
+        LogRecorder.recordEvent("底栏样式已切换为: " + BOTTOM_BAR_STYLE_LABELS[selected]);
+        if (liquid || miuix) {
+            LiquidGlassInstaller.applyGlassStyle(activity);
+        } else {
+            LiquidGlassInstaller.applyGlassEnabled(activity);
+        }
+        View panel = mSettingsPanel == null ? null : mSettingsPanel.get();
+        if (panel != null && panel.getParent() != null) {
+            showModulePage(activity, PAGE_UI);
+        }
+    }
+
     private static final String[] GLASS_PROVIDER_LABELS = {
-            "BetterHeybox（模块自带）", "小黑盒液态玻璃模块"};
+            "BetterHeybox（模块自带）",
+            "小黑盒液态玻璃模块"};
+
+    private static final int GLASS_OPTION_OWN = 0;
+    private static final int GLASS_OPTION_HBMOD = 1;
+
+    private int selectedGlassOption() {
+        String provider = module.getString(App.KEY_GLASS_PROVIDER, "");
+        if (GlassProvider.PROVIDER_HBMOD.equals(provider)) {
+            return GLASS_OPTION_HBMOD;
+        }
+        return GLASS_OPTION_OWN;
+    }
+
+    private String selectedGlassProviderLabel() {
+        return GLASS_PROVIDER_LABELS[selectedGlassOption()];
+    }
 
     private void showGlassProviderDialog(final Activity activity) {
         withHeyboxDialog(activity, spec -> showGlassProviderDialogNative(activity, spec),
@@ -3090,30 +3211,35 @@ private void showCommentKeywordsDialog(Activity activity) {
 
     private void showGlassProviderDialogNative(final Activity activity,
                                                DexKitResolver.HeyboxDialogSpec spec) throws Exception {
-        String current = module.getString(App.KEY_GLASS_PROVIDER, "");
-        final int checked = GlassProvider.PROVIDER_HBMOD.equals(current) ? 1 : 0;
+        final int checked = selectedGlassOption();
         LinearLayout list = buildOptionRowList(activity, GLASS_PROVIDER_LABELS, checked);
         Dialog dialog = spec.buildAndShow(activity, "选择液态玻璃实现", list, null, null,
                 "取消", (d, w) -> d.dismiss());
-        bindOptionRows(dialog, list, index ->
-                chooseGlassProvider(activity, GLASS_PROVIDER_VALUES[index]));
+        bindOptionRows(dialog, list, index -> chooseGlassProvider(activity, index));
         module.logd(Log.INFO, module.TAG, "✔ 使用小黑盒原生弹窗选择液态玻璃实现");
     }
 
     private void showGlassProviderDialogFallback(final Activity activity) {
-        String current = module.getString(App.KEY_GLASS_PROVIDER, "");
-        int checked = GlassProvider.PROVIDER_HBMOD.equals(current) ? 1 : 0;
+        int checked = selectedGlassOption();
         showSingleChoiceFallback(activity, "选择液态玻璃实现", GLASS_PROVIDER_LABELS, checked,
-                index -> chooseGlassProvider(activity, GLASS_PROVIDER_VALUES[index]));
+                index -> chooseGlassProvider(activity, index));
     }
 
-    private void chooseGlassProvider(Activity activity, String value) {
+    private void chooseGlassProvider(Activity activity, int option) {
+        String provider = option == GLASS_OPTION_HBMOD
+                ? GlassProvider.PROVIDER_HBMOD : GlassProvider.PROVIDER_OWN;
         try {
-            HeyboxPrefs.setString(App.KEY_GLASS_PROVIDER, value);
-            LogRecorder.recordEvent("液态玻璃实现已选择: " + value);
+            HeyboxPrefs.setString(App.KEY_GLASS_PROVIDER, provider);
+            LogRecorder.recordEvent("液态玻璃实现已选择: "
+                    + GLASS_PROVIDER_LABELS[Math.max(0,
+                    Math.min(option, GLASS_PROVIDER_LABELS.length - 1))]);
         } catch (Throwable t) {
             module.logd(Log.WARN, module.TAG, "保存液态玻璃实现选择失败: " + t);
             return;
+        }
+        if (option != GLASS_OPTION_HBMOD
+                || LiquidGlassInstaller.isMiuixEnabled(activity)) {
+            LiquidGlassInstaller.applyGlassStyle(activity);
         }
         try {
             View panel = mSettingsPanel == null ? null : mSettingsPanel.get();
@@ -3662,8 +3788,10 @@ private void showCommentKeywordsDialog(Activity activity) {
 
     private void resetLiquidGlassSettings(Activity activity) {
         HeyboxPrefs.setBoolean(App.KEY_LIQUID_GLASS, true);
+        HeyboxPrefs.setBoolean(App.KEY_MIUIX_BOTTOM_BAR, false);
         HeyboxPrefs.setBoolean(App.KEY_GLASS_IMMERSIVE, true);
         module.onSettingChanged(App.KEY_LIQUID_GLASS);
+        module.onSettingChanged(App.KEY_MIUIX_BOTTOM_BAR);
         module.onSettingChanged(App.KEY_GLASS_IMMERSIVE);
         HeyboxPrefs.setBoolean(App.KEY_GLASS_ADAPTIVE, true);
         HeyboxPrefs.setString(App.KEY_GLASS_DARK_COLOR, "#000000");
@@ -3687,7 +3815,9 @@ private void showCommentKeywordsDialog(Activity activity) {
         if (key == null || activity == null) {
             return;
         }
-        if (!App.KEY_LIQUID_GLASS.equals(key) && !key.startsWith("glass_")) {
+        if (!App.KEY_LIQUID_GLASS.equals(key)
+                && !App.KEY_MIUIX_BOTTOM_BAR.equals(key)
+                && !key.startsWith("glass_")) {
             return;
         }
         try {
@@ -4339,16 +4469,26 @@ private void showCommentKeywordsDialog(Activity activity) {
         Class<?> cardCls = Class.forName("androidx.cardview.widget.CardView", false, cl);
         Object card = cardCls.getConstructor(Context.class).newInstance(activity);
         float density = activity.getResources().getDisplayMetrics().density;
-        cardCls.getMethod("setRadius", float.class).invoke(card, 8f * density);
+        cardCls.getMethod("setRadius", float.class).invoke(card, 18f * density);
         cardCls.getMethod("setCardElevation", float.class).invoke(card, 0f);
+        try {
+            cardCls.getMethod("setCardBackgroundColor", int.class)
+                    .invoke(card, ThemeUtils.surfaceColor(activity));
+        } catch (Throwable ignored) {
+        }
+        try {
+            cardCls.getMethod("setUseCompatPadding", boolean.class).invoke(card, false);
+            cardCls.getMethod("setPreventCornerOverlap", boolean.class).invoke(card, true);
+        } catch (Throwable ignored) {
+        }
         try {
             cardCls.getMethod("setMaxCardElevation", float.class).invoke(card, 0f);
         } catch (Throwable ignored) {
         }
         LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        int m = ThemeUtils.dp(activity, 12);
-        cardLp.setMargins(m, ThemeUtils.dp(activity, 8), m, 0);
+        int m = ThemeUtils.dp(activity, 14);
+        cardLp.setMargins(m, ThemeUtils.dp(activity, 6), m, 0);
         ((View) card).setLayoutParams(cardLp);
         LinearLayout content = new LinearLayout(activity);
         content.setOrientation(LinearLayout.VERTICAL);

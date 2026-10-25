@@ -29,13 +29,47 @@ public final class LiquidGlassInstaller {
     }
 
     public static boolean isGlassEnabled(Activity activity) {
+        return isLiquidGlassEnabled(activity) || isMiuixEnabled(activity);
+    }
+
+    public static boolean isLiquidGlassEnabled(Context context) {
         try {
-            com.better.heybox.HeyboxPrefs.init(activity);
+            com.better.heybox.HeyboxPrefs.init(context);
             return com.better.heybox.HeyboxPrefs.getBoolean(
                     com.better.heybox.App.KEY_LIQUID_GLASS, true);
         } catch (Throwable t) {
             return true;
         }
+    }
+
+    public static boolean isMiuixEnabled(Context context) {
+        try {
+            com.better.heybox.HeyboxPrefs.init(context);
+            if (com.better.heybox.HeyboxPrefs.contains(
+                    com.better.heybox.App.KEY_MIUIX_BOTTOM_BAR)) {
+                return com.better.heybox.HeyboxPrefs.getBoolean(
+                        com.better.heybox.App.KEY_MIUIX_BOTTOM_BAR, false);
+            }
+            // v0.9.4 stored MIUIX as a liquid-glass sub-style. Migrate it once
+            // into the new independent, mutually exclusive switch.
+            boolean legacyMiuix = "1".equals(com.better.heybox.HeyboxPrefs.getString(
+                    com.better.heybox.App.KEY_GLASS_STYLE, "0"));
+            if (legacyMiuix) {
+                com.better.heybox.HeyboxPrefs.setBoolean(
+                        com.better.heybox.App.KEY_MIUIX_BOTTOM_BAR, true);
+                com.better.heybox.HeyboxPrefs.setBoolean(
+                        com.better.heybox.App.KEY_LIQUID_GLASS, false);
+                com.better.heybox.HeyboxPrefs.setString(
+                        com.better.heybox.App.KEY_GLASS_STYLE, "0");
+            }
+            return legacyMiuix;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static boolean prefersExternalLiquidGlass(Context context) {
+        return !isMiuixEnabled(context) && GlassProvider.prefersHbmod(context);
     }
 
     public static boolean isGlassBarActive() {
@@ -74,7 +108,7 @@ public final class LiquidGlassInstaller {
 
     public static void applyGlassEnabled(Activity activity) {
         try {
-            if (GlassProvider.prefersHbmod(activity)) {
+            if (prefersExternalLiquidGlass(activity)) {
                 return;
             }
             Activity main = mainActivity();
@@ -93,9 +127,26 @@ public final class LiquidGlassInstaller {
         }
     }
 
+    public static void applyGlassStyle(Activity activity) {
+        try {
+            Activity main = mainActivity();
+            if (main == null) {
+                main = activity;
+            }
+            GlassConfig.load(main);
+            if (!isGlassEnabled(main) || prefersExternalLiquidGlass(main)) {
+                return;
+            }
+            uninstallGlass(main);
+            scheduleInstall(main);
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("apply glass style failed", t);
+        }
+    }
+
     public static void scheduleInstall(Activity activity) {
         sMainRef = new java.lang.ref.WeakReference<>(activity);
-        if (GlassProvider.prefersHbmod(activity)) {
+        if (prefersExternalLiquidGlass(activity)) {
             return;
         }
         View decor = activity.getWindow().getDecorView();
@@ -447,7 +498,11 @@ public final class LiquidGlassInstaller {
         sNavPad = navPad;
         sInstallPadBottom = origBarPadBottom + navPad;
 
+        boolean miuixDocked = isMiuixEnabled(activity);
         LiquidGlassHostLayout host = new LiquidGlassHostLayout(ctx, root, bar);
+        if (miuixDocked) {
+            host.setId(View.generateViewId());
+        }
 
         root.removeView(bar);
         if (tips != null && tips.getParent() == root) {
@@ -502,7 +557,7 @@ public final class LiquidGlassInstaller {
         if (content != null && content.getParent() == root) {
             RelativeLayout.LayoutParams clp =
                     (RelativeLayout.LayoutParams) content.getLayoutParams();
-            clp.getRules()[RelativeLayout.ABOVE] = 0;
+            clp.getRules()[RelativeLayout.ABOVE] = miuixDocked ? host.getId() : 0;
             content.setLayoutParams(clp);
         }
 
@@ -667,7 +722,9 @@ public final class LiquidGlassInstaller {
             sCenterRefStatic = null;
 
             final com.example.liquidglass.LiquidGlassTabBar tabBar =
-                    new com.example.liquidglass.LiquidGlassTabBar(activity, null, 0);
+                    isMiuixEnabled(activity)
+                            ? new MiuixGlassTabBar(activity)
+                            : new com.example.liquidglass.LiquidGlassTabBar(activity, null, 0);
             sTabBarRef = new java.lang.ref.WeakReference<>(tabBar);
             resetWidthAnimState();
             sBuildSig = "";
@@ -690,7 +747,12 @@ public final class LiquidGlassInstaller {
                         "tabbar: no radio buttons found");
                 return;
             }
-            applyQwea0Params(tabBar, content, density, false);
+            if (!(tabBar instanceof MiuixGlassTabBar)) {
+                applyQwea0Params(tabBar, content, density, false);
+            } else {
+                tabBar.setPadding(tabBar.getPaddingLeft(), tabBar.getPaddingTop(),
+                        tabBar.getPaddingRight(), Math.max(0, navPad));
+            }
             installTintOverride();
 
             host.addView(tabBar, host.getChildCount(), new FrameLayout.LayoutParams(
@@ -741,7 +803,9 @@ public final class LiquidGlassInstaller {
             placeCenterNow(host, tabBar, sCenterRefStatic, 0);
             applyBarGeometry();
 
-            startBackdropMeter(tabBar);
+            if (!(tabBar instanceof MiuixGlassTabBar)) {
+                startBackdropMeter(tabBar);
+            }
 
             bar.setVisibility(View.INVISIBLE);
 
@@ -751,7 +815,9 @@ public final class LiquidGlassInstaller {
             ((LiquidGlassHostLayout) host).setExternalRendererActive(true);
 
             LiquidGlassLog.log(android.util.Log.INFO,
-                    "renderer=QWEA0 LiquidGlassTabBar (glass droplet selection)");
+                    tabBar instanceof MiuixGlassTabBar
+                            ? "renderer=MIUIX docked NavigationBar"
+                            : "renderer=QWEA0 LiquidGlassTabBar (glass droplet selection)");
             sTabBarActive = true;
         } catch (Throwable t) {
             LiquidGlassLog.logErr("qwea0 tabbar unavailable", t);
@@ -1187,6 +1253,7 @@ public final class LiquidGlassInstaller {
                 sSyncing = false;
             }
             applyTabWidths(selected);
+            applyTabBarOverLight(tabBar, !sChromeLight);
         } catch (Throwable t) {
             LiquidGlassLog.logErr("restore tab selection failed", t);
         }
@@ -1708,7 +1775,7 @@ public final class LiquidGlassInstaller {
 
     private static void attachTitleBarPanelEntry(Activity activity) {
         try {
-            if (activity == null || GlassProvider.prefersHbmod(activity)) {
+            if (activity == null || prefersExternalLiquidGlass(activity)) {
                 return;
             }
             if (activity.getWindow() == null) {
@@ -1735,7 +1802,7 @@ public final class LiquidGlassInstaller {
             return;
         }
         final Activity activity = (Activity) tabBar.getContext();
-        if (GlassProvider.prefersHbmod(activity)) {
+        if (prefersExternalLiquidGlass(activity)) {
             return;
         }
         tabBar.post(() -> {
@@ -1830,10 +1897,14 @@ public final class LiquidGlassInstaller {
         }
         sLastTabs = visibleTabs;
         int stableTabs = sStableTabs >= 0 ? sStableTabs : visibleTabs;
+        boolean miuixDocked = tabBar instanceof MiuixGlassTabBar;
         boolean publishHidden = readPublishHidden(tabBar.getContext());
         boolean circle;
         boolean wantHidden;
-        if (publishHidden) {
+        if (miuixDocked) {
+            circle = false;
+            wantHidden = publishHidden || stableTabs % 2 == 1 || stableTabs == 0;
+        } else if (publishHidden) {
             circle = false;
             wantHidden = true;
         } else if (com.better.heybox.hooks.BottomTabHook.isAnyTabHidden()
@@ -2090,8 +2161,10 @@ public final class LiquidGlassInstaller {
             if (tabs == 0) {
                 return false;
             }
-            float f = Math.max(50, Math.min(GlassConfig.tabWidthPct, 150)) / 100f;
-            boolean fit = fitVisibleTabsEffective(tabs);
+            boolean miuixDocked = barV instanceof MiuixGlassTabBar;
+            float f = miuixDocked ? 1f
+                    : Math.max(50, Math.min(GlassConfig.tabWidthPct, 150)) / 100f;
+            boolean fit = !miuixDocked && fitVisibleTabsEffective(tabs);
             boolean glide = fit || sFitActive;
             sFitActive = fit;
             float[] before = glide ? captureTabCenters(row) : null;
@@ -2099,7 +2172,7 @@ public final class LiquidGlassInstaller {
 
             float den = sDensity > 0 ? sDensity
                     : barV.getResources().getDisplayMetrics().density;
-            float[] metrics = !fit && GlassConfig.barWidthMode == 0
+            float[] metrics = !miuixDocked && !fit && GlassConfig.barWidthMode == 0
                     ? adaptiveMetricsDp(den) : null;
             float gap = fit ? CENTER_GAP_WEIGHT
                     : metrics != null ? Math.max(metrics[1], 0.3f)
@@ -2367,6 +2440,12 @@ public final class LiquidGlassInstaller {
                     - Math.round(20f * den);
         }
         int available = Math.max(0, hostWidth - lp.rightMargin);
+        if (barV instanceof MiuixGlassTabBar) {
+            lp.rightMargin = 0;
+            return setBarWidth(barV, lp, ViewGroup.LayoutParams.MATCH_PARENT, 0,
+                    android.view.Gravity.TOP | android.view.Gravity.FILL_HORIZONTAL,
+                    hostWidth);
+        }
         if (!fit) {
             return setBarWidth(barV, lp, ViewGroup.LayoutParams.MATCH_PARENT, 0,
                     android.view.Gravity.TOP
@@ -2599,6 +2678,9 @@ public final class LiquidGlassInstaller {
     private static void reanimateDroplet(
             final com.example.liquidglass.LiquidGlassTabBar tabBar) {
         try {
+            if (tabBar instanceof MiuixGlassTabBar) {
+                return;
+            }
             if (sBarWidthAnimator != null && sBarWidthAnimator.isRunning()) {
                 return;
             }
@@ -2633,9 +2715,28 @@ public final class LiquidGlassInstaller {
 
     private static void applyTabBarOverLight(
             com.example.liquidglass.LiquidGlassTabBar tabBar, boolean darkBar) {
-        int selectedColor = darkBar ? 0xFFFFFFFF : 0xE6000000;
-        int normalColor = darkBar ? 0xB8FFFFFF : 0x8C000000;
+        boolean miuix = tabBar instanceof MiuixGlassTabBar;
+        int selectedColor = miuix
+                ? com.better.heybox.ThemeUtils.resolveAccent(tabBar.getContext())
+                : (darkBar ? 0xFFFFFFFF : 0xE6000000);
+        int normalColor = miuix
+                ? com.better.heybox.ThemeUtils.textSecondaryColor(tabBar.getContext())
+                : (darkBar ? 0xB8FFFFFF : 0x8C000000);
         int applied = 0;
+        try {
+            java.lang.reflect.Field af = com.example.liquidglass.LiquidGlassTabBar.class
+                    .getDeclaredField("overLightAppearance");
+            af.setAccessible(true);
+            af.setBoolean(tabBar, !darkBar);
+
+            java.lang.reflect.Method uts = com.example.liquidglass.LiquidGlassTabBar.class
+                    .getDeclaredMethod("updateTabStyles");
+            uts.setAccessible(true);
+            uts.invoke(tabBar);
+        } catch (Throwable t) {
+            LiquidGlassLog.log(android.util.Log.WARN,
+                    "updateTabStyles refresh failed: " + t);
+        }
         try {
             java.lang.reflect.Field tf = com.example.liquidglass.LiquidGlassTabBar.class
                     .getDeclaredField("tabs");
@@ -2669,20 +2770,6 @@ public final class LiquidGlassInstaller {
             }
         } catch (Throwable t) {
             LiquidGlassLog.logErr("direct chrome recolor failed", t);
-        }
-        try {
-            java.lang.reflect.Field af = com.example.liquidglass.LiquidGlassTabBar.class
-                    .getDeclaredField("overLightAppearance");
-            af.setAccessible(true);
-            af.setBoolean(tabBar, !darkBar);
-
-            java.lang.reflect.Method uts = com.example.liquidglass.LiquidGlassTabBar.class
-                    .getDeclaredMethod("updateTabStyles");
-            uts.setAccessible(true);
-            uts.invoke(tabBar);
-        } catch (Throwable t) {
-            LiquidGlassLog.log(android.util.Log.WARN,
-                    "updateTabStyles refresh failed: " + t);
         }
         tabBar.invalidate();
         LiquidGlassLog.log(android.util.Log.INFO,
@@ -2809,6 +2896,18 @@ public final class LiquidGlassInstaller {
                         .getDisplayMetrics().widthPixels;
             }
             if (parentWidth <= 0) {
+                return;
+            }
+
+            if (isMiuixEnabled(host.getContext())) {
+                boolean changed = lp.width != ViewGroup.LayoutParams.MATCH_PARENT
+                        || lp.leftMargin != 0 || lp.rightMargin != 0;
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                lp.leftMargin = 0;
+                lp.rightMargin = 0;
+                if (changed) {
+                    host.setLayoutParams(lp);
+                }
                 return;
             }
 
@@ -2978,21 +3077,29 @@ public final class LiquidGlassInstaller {
                 return;
             }
             float den = sDensity > 0 ? sDensity : 3f;
+            boolean miuixDocked = barV instanceof MiuixGlassTabBar;
             int hDp = GlassConfig.barHeightDp;
             FrameLayout.LayoutParams blp =
                     (FrameLayout.LayoutParams) barV.getLayoutParams();
 
-            blp.height = hDp <= 0
+            blp.height = miuixDocked || hDp <= 0
                     ? ViewGroup.LayoutParams.WRAP_CONTENT
                     : Math.round(hDp * den);
+            if (miuixDocked) {
+                blp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                blp.leftMargin = 0;
+                blp.rightMargin = 0;
+                blp.gravity = android.view.Gravity.TOP
+                        | android.view.Gravity.FILL_HORIZONTAL;
+            }
             barV.setLayoutParams(blp);
 
             centerTabsRow((ViewGroup) barV);
 
-            int off = Math.max(0, GlassConfig.barOffsetDp);
+            int off = miuixDocked ? 0 : Math.max(0, GlassConfig.barOffsetDp);
             host.setPadding(host.getPaddingLeft(), host.getPaddingTop(),
-                    host.getPaddingRight(), sBasePadBottom
-                            + Math.round(off * den));
+                    host.getPaddingRight(), miuixDocked ? 0
+                            : sBasePadBottom + Math.round(off * den));
 
             applyBarSideMargins(host);
             boolean tabLayoutChanged = applyTabWidths();
@@ -3196,6 +3303,7 @@ public final class LiquidGlassInstaller {
                         && tabBar.getSelectedIndex() != i) {
                     prepareSelectionLayout(tabBar, i);
                     tabBar.setSelectedIndex(i);
+                    applyTabBarOverLight(tabBar, !sChromeLight);
                     break;
                 }
             }
@@ -3353,7 +3461,9 @@ public final class LiquidGlassInstaller {
         if (key == null) {
             return false;
         }
-        return com.better.heybox.App.KEY_LIQUID_GLASS.equals(key) || key.startsWith("glass_");
+        return com.better.heybox.App.KEY_LIQUID_GLASS.equals(key)
+                || com.better.heybox.App.KEY_MIUIX_BOTTOM_BAR.equals(key)
+                || key.startsWith("glass_");
     }
 
     public static void installSettingsEntries(ClassLoader cl) {
@@ -3398,7 +3508,7 @@ public final class LiquidGlassInstaller {
 
                         if (!repurposed && !sGlassEntries.containsKey(icon)) {
                             android.content.Context cx = icon.getContext();
-                            if (cx instanceof Activity && !GlassProvider.prefersHbmod(cx)) {
+                            if (cx instanceof Activity && !prefersExternalLiquidGlass(cx)) {
                                 sGlassEntries.put(icon, Boolean.TRUE);
                                 final Activity a = (Activity) cx;
                                 icon.setOnLongClickListener(v -> {
@@ -3489,7 +3599,7 @@ public final class LiquidGlassInstaller {
             if (activity.isFinishing() || activity.isDestroyed() || attempt > 10) {
                 return;
             }
-            if (GlassProvider.prefersHbmod(activity)) {
+            if (prefersExternalLiquidGlass(activity)) {
                 return;
             }
             int id = activity.getResources().getIdentifier(
