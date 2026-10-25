@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- 无 root 重启小黑盒：杀掉其后台进程（普通权限，自动授予） -->
     <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
@@ -17,7 +16,8 @@
         android:name=".App"
         android:label="@string/app_name"
         android:description="@string/module_description"
-        tools:ignore="MissingApplicationIcon">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher">
 
         <!-- 设置仅通过小黑盒内嵌面板提供（SettingsEntryHook 注入），模块无独立界面。 -->
 

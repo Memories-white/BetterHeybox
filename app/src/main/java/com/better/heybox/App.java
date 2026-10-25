@@ -145,6 +145,7 @@ public class App extends Application implements XposedServiceHelper.OnServiceLis
     public static final String KEY_WEBVIEW_DEVTOOLS = "webview_devtools";
 
     public static final String KEY_LIQUID_GLASS = "liquid_glass";
+    public static final String KEY_MIUIX_BOTTOM_BAR = "miuix_bottom_bar";
     public static final String KEY_GLASS_IMMERSIVE = "glass_immersive";
     public static final String KEY_GLASS_ADAPTIVE = "glass_adaptive";
     public static final String KEY_GLASS_DARK_COLOR = "glass_dark_color";
@@ -169,6 +170,8 @@ public class App extends Application implements XposedServiceHelper.OnServiceLis
     public static final String KEY_GLASS_SEARCH_IN_BAR = "glass_search_in_bar";
 
     public static final String KEY_GLASS_PROVIDER = "glass_provider";
+
+    public static final String KEY_GLASS_STYLE = "glass_style";
 
     public static final String KEY_SINGLE_COLUMN_FEED = "single_column_feed";
 
@@ -361,6 +364,7 @@ public class App extends Application implements XposedServiceHelper.OnServiceLis
         m.put(KEY_LOG, false);
         m.put(KEY_WEBVIEW_DEVTOOLS, false);
         m.put(KEY_LIQUID_GLASS, true);
+        m.put(KEY_MIUIX_BOTTOM_BAR, false);
         m.put(KEY_GLASS_IMMERSIVE, true);
         m.put(KEY_GLASS_ADAPTIVE, true);
         m.put(KEY_GLASS_FIT_TABS, false);

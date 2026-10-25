@@ -13,7 +13,11 @@ val keystoreProps = Properties().apply {
 
 android {
     namespace = "com.better.heybox"
-    compileSdk = 37
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
@@ -22,6 +26,18 @@ android {
         targetSdk = 37
         versionCode = (project.findProperty("VERSION_CODE") as String? ?: "1").toInt()
         versionName = project.findProperty("VERSION_NAME") as String? ?: "v0.3.1"
+    }
+
+    flavorDimensions += "installation"
+    productFlavors {
+        create("standard") {
+            dimension = "installation"
+        }
+        create("parallel") {
+            dimension = "installation"
+            applicationIdSuffix = ".parallel"
+            versionNameSuffix = "-parallel"
+        }
     }
 
     signingConfigs {

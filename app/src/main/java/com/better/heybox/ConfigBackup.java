@@ -23,6 +23,7 @@ public final class ConfigBackup {
             App.KEY_MY_TASK_KEYWORDS,
             App.KEY_MY_TASK_MAX_PER_DAY,
             App.KEY_GLASS_PROVIDER,
+            App.KEY_GLASS_STYLE,
             App.KEY_GLASS_DARK_COLOR,
             App.KEY_GLASS_DARK_ALPHA,
             App.KEY_GLASS_LIGHT_COLOR,

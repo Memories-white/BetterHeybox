@@ -22,7 +22,6 @@ final class GlassConfig {
     private static final int DEFAULT_BAR_WIDTH_PCT = 100;
     private static final int DEFAULT_TAB_WIDTH_PCT = 100;
     private static final int DEFAULT_BAR_LAYOUT = 0;
-
     private static final int DEFAULT_TAB_SELECT_COLOR = 0xFFF2F2F2;
     private static final int DEFAULT_TAB_SELECT_ALPHA = 16;
 
