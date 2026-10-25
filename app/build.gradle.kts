@@ -28,18 +28,6 @@ android {
         versionName = project.findProperty("VERSION_NAME") as String? ?: "v0.3.1"
     }
 
-    flavorDimensions += "installation"
-    productFlavors {
-        create("standard") {
-            dimension = "installation"
-        }
-        create("parallel") {
-            dimension = "installation"
-            applicationIdSuffix = ".parallel"
-            versionNameSuffix = "-parallel"
-        }
-    }
-
     signingConfigs {
         if (keystoreProps.containsKey("storeFile")) {
             create("release") {
