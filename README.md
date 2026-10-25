@@ -318,13 +318,10 @@ app/src/main/resources/META-INF/xposed/
    - Windows：`gradlew.bat assembleDebug`
    - 命令行/CI：`./gradlew assembleDebug`
    - 或 Android Studio `Build > Make Project`
-   - 标准版：`app/build/outputs/apk/standard/debug/app-standard-debug.apk`
-   - 共存版：`app/build/outputs/apk/parallel/debug/app-parallel-debug.apk`
+   - 产物：`app/build/outputs/apk/debug/app-debug.apk`
 3. **刷入**：
    - 模拟器/真机需 **支持 API 102 的 LSPosed 框架**
    - 安装 APK → LSPosed Manager 启用模块。
-   - 标准版包名为 `com.better.heybox`，共存版包名为 `com.better.heybox.parallel`，两者可以同时安装
-   - 两个模块会 Hook 同一个小黑盒进程；请在 LSPosed 中同一时间只启用其中一个
    - 重启小黑盒进程
 4. **查看日志**：`adb logcat -s BetterHeybox`；也可在小黑盒设置面板开启「记录日志」，日志自动写入文件便于离线排查
 
