@@ -34,7 +34,11 @@ public final class CommentSharePanelHook {
     private static final String SUB_COMMENT_VIEW_CLASS =
             "com.max.xiaoheihe.view.SubCommentView";
     private static final String COMMENT_OBJ_CLASS = "com.max.basebbs.bean.BBSCommentObj";
-    private static final String REPLY_INTENT_CLASS = "hd.b$c";
+    /**
+     * 评论区用户意图在宿主更新后会整体换包名。1.3.398 使用 {@code id.b$c}，
+     * 旧版使用 {@code hd.b$c}；两者都是持有「主评论、目标评论」的 Reply intent。
+     */
+    private static final String[] REPLY_INTENT_CLASS_CANDIDATES = {"id.b$c", "hd.b$c"};
     /**
      * Kotlin {@code Function1} 接口的混淆类名，逐版本轮换。全树唯一实现类的判据是
      * 声明了 {@code public abstract invoke(Ljava/lang/Object;)Ljava/lang/Object;}。
@@ -92,7 +96,7 @@ public final class CommentSharePanelHook {
         sCommentTextClass = tryForName(COMMENT_TEXT_CLASS, cl);
         sSubCommentViewClass = tryForName(SUB_COMMENT_VIEW_CLASS, cl);
         sCommentObjClass = tryForName(COMMENT_OBJ_CLASS, cl);
-        sReplyIntentClass = tryForName(REPLY_INTENT_CLASS, cl);
+        sReplyIntentClass = resolveReplyIntentClass(cl);
         sFunction1Class = resolveFunction1Class(cl);
         if (sCommentTextClass == null || sCommentObjClass == null || sReplyIntentClass == null) {
             module.logd(Log.WARN, module.TAG, "评论分享面板类型解析缺失: text=" + (sCommentTextClass != null)
@@ -128,6 +132,25 @@ public final class CommentSharePanelHook {
                 }
             } catch (Throwable ignored) {
                 // 该候选不是函数接口，继续尝试下一个
+            }
+        }
+        return null;
+    }
+
+    private static Class<?> resolveReplyIntentClass(ClassLoader cl) {
+        if (sCommentObjClass == null) {
+            return null;
+        }
+        for (String name : REPLY_INTENT_CLASS_CANDIDATES) {
+            Class<?> candidate = tryForName(name, cl);
+            if (candidate == null) {
+                continue;
+            }
+            try {
+                candidate.getConstructor(sCommentObjClass, sCommentObjClass);
+                return candidate;
+            } catch (Throwable ignored) {
+                // 同名类型也必须具备 Reply intent 的双评论构造器。
             }
         }
         return null;

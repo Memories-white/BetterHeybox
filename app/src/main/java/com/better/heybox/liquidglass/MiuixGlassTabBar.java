@@ -13,6 +13,10 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewTreeObserver;
+import android.view.animation.OvershootInterpolator;
+import android.widget.ImageView;
+
+import java.lang.ref.WeakReference;
 
 final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
 
@@ -31,7 +35,7 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
     private static final float BACKDROP_SCALE = 0.20f;
 
     private static final int GLASS_ALPHA = 255;
-    private static final int SURFACE_BLEND_ALPHA = 208;
+    private static final int SURFACE_BLEND_ALPHA = 144;
 
     private static final int FALLBACK_DARK = 0xFF1C1C1E;
     private static final int FALLBACK_LIGHT = 0xFFF7F7F8;
@@ -46,7 +50,6 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
     private final Paint mTintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mTopDividerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    private boolean mUseAboveOnly;
     private Bitmap mBackdrop;
     private float mRadius;
     private long mLastCaptureAt;
@@ -56,8 +59,6 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
 
     private int mCaptureFailures;
 
-    private boolean mTriedRootFallback;
-
     private boolean mHasBackdrop;
     private boolean mOverLight;
     private boolean mDark;
@@ -65,6 +66,8 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
 
     private ViewTreeObserver.OnPreDrawListener mPreDrawListener;
     private View mInheritedLiquidDroplet;
+    private Boolean mAppliedThemeDark;
+    private WeakReference<View> mBackdropSourceRef = new WeakReference<>(null);
 
     MiuixGlassTabBar(Context context) {
         super(context, null, 0);
@@ -78,6 +81,11 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
         mDark = initialDarkGuess();
         applyFallbackColor();
         suppressInheritedLiquidDroplet();
+    }
+
+    void setMiuixBackdropSource(View source) {
+        mBackdropSourceRef = new WeakReference<>(source);
+        resetCaptureState();
     }
 
     private boolean initialDarkGuess() {
@@ -119,7 +127,6 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
         mLastCaptureAt = 0L;
         mDrawnViews = 0;
         mCaptureFailures = 0;
-        mTriedRootFallback = false;
         if (mBackdrop != null && !mBackdrop.isRecycled()) {
             mBackdrop.eraseColor(0);
         }
@@ -191,60 +198,64 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
                 onCaptureFailed();
                 return;
             }
-            View root = getRootView();
-            if (root == null) {
+            View source = mBackdropSourceRef.get();
+            if (source == null || !source.isAttachedToWindow()
+                    || source.getWidth() <= 0 || source.getHeight() <= 0) {
+                source = getRootView();
+            }
+            if (source == null) {
                 onCaptureFailed();
                 return;
             }
-            int[] rootLoc = new int[2];
+            int[] sourceLoc = new int[2];
             int[] selfLoc = new int[2];
-            root.getLocationOnScreen(rootLoc);
+            source.getLocationOnScreen(sourceLoc);
             getLocationOnScreen(selfLoc);
-            float dx = selfLoc[0] - rootLoc[0];
-            float dy = selfLoc[1] - rootLoc[1];
-
-            float shift = getHeight() > 0 ? getHeight() : 0f;
-            mUseAboveOnly = dy >= shift;
+            float dx = selfLoc[0] - sourceLoc[0];
+            float dy = selfLoc[1] - sourceLoc[1];
 
             mBackdrop.eraseColor(0);
             Canvas c = new Canvas(mBackdrop);
             c.save();
             c.scale(BACKDROP_SCALE, BACKDROP_SCALE);
-            c.translate(-dx, -(mUseAboveOnly ? dy - shift : dy));
-            int vis = getVisibility();
-            setVisibility(INVISIBLE);
-            try {
-
-                drawAboveSiblings(root, c);
-            } finally {
-                setVisibility(vis);
-                c.restore();
+            // Sample the exact screen rectangle occupied by the navigation bar.
+            // The previous implementation shifted this rectangle upward by one
+            // bar height, which made the glass show the page area above it.
+            c.translate(-dx, -dy);
+            if (source == getRootView()) {
+                int vis = getVisibility();
+                setVisibility(INVISIBLE);
+                try {
+                    source.draw(c);
+                    mDrawnViews = 1;
+                } finally {
+                    setVisibility(vis);
+                }
+            } else {
+                // Draw the app's page container directly. Capturing the decor root
+                // can lose hardware-accelerated child layers and collapse to the
+                // window surface color on some MIUI devices.
+                source.draw(c);
+                mDrawnViews = 1;
             }
+            c.restore();
 
             if (mDrawnViews == 0) {
-                if (!mTriedRootFallback) {
-                    mTriedRootFallback = true;
-                    captureWholeRoot(root, c, shift);
-                }
-                if (mDrawnViews == 0) {
-                    mBackdrop.eraseColor(0);
-                    onCaptureFailed();
-                    return;
-                }
+                mBackdrop.eraseColor(0);
+                onCaptureFailed();
+                return;
             }
 
             int luma = averageLuma();
 
-            int above = lumaAbove();
-            mDark = above <= OVER_LIGHT_LUMA;
+            mDark = initialDarkGuess();
             applyFallbackColor();
             // The buffer is already downsampled to 20%; a small stack blur is
             // visually equivalent to a much larger screen-space blur without
             // the costly full-resolution refraction pipeline.
-            StackBlur.blur(mBackdrop, 4);
+            StackBlur.blur(mBackdrop, 5);
             mHasBackdrop = true;
             mCaptureFailures = 0;
-            mTriedRootFallback = false;
             updateAppearance(luma);
             invalidate();
         } catch (Throwable t) {
@@ -258,139 +269,11 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
     private void onCaptureFailed() {
         mCaptureFailures++;
         mHasBackdrop = false;
-        mTriedRootFallback = false;
         applyFallbackColor();
         invalidate();
         if (mCaptureFailures == 1 || DEBUG_APPEARANCE) {
             LiquidGlassLog.log(Log.INFO, "miuix tabbar capture retry, failures=" + mCaptureFailures);
         }
-    }
-
-    private void captureWholeRoot(View root, Canvas canvas, float shift) {
-
-        if (!mUseAboveOnly) {
-            return;
-        }
-        int vis = getVisibility();
-        setVisibility(INVISIBLE);
-        try {
-            float selfTopCanvas = shift;
-            if (selfTopCanvas <= 0f) {
-                return;
-            }
-            canvas.save();
-            canvas.clipRect(0f, 0f, getWidth(), selfTopCanvas);
-            root.draw(canvas);
-            canvas.restore();
-            mDrawnViews = 1;
-        } catch (Throwable t) {
-
-            LiquidGlassLog.logErr("miuix tabbar root fallback failed", t);
-        } finally {
-            setVisibility(vis);
-        }
-    }
-
-    private void drawAboveSiblings(View root, Canvas canvas) {
-        mDrawnViews = 0;
-        if (!(root instanceof android.view.ViewGroup)) {
-            return;
-        }
-        View child = this;
-        java.util.ArrayList<View> chain = new java.util.ArrayList<>();
-        while (child != null && child != root) {
-            chain.add(child);
-            android.view.ViewParent p = child.getParent();
-            child = p instanceof View ? (View) p : null;
-        }
-        if (chain.isEmpty() || child != root) {
-            return;
-        }
-        java.util.Collections.reverse(chain);
-        android.view.ViewGroup group = (android.view.ViewGroup) root;
-        int[] selfLoc = new int[2];
-        getLocationOnScreen(selfLoc);
-        int selfTop = selfLoc[1];
-
-        int aboveTop = Math.max(0, selfTop - getHeight());
-        for (int level = 0; level < chain.size(); level++) {
-            View current = chain.get(level);
-            View next = level + 1 < chain.size() ? chain.get(level + 1) : null;
-            int count;
-            try {
-                count = group.getChildCount();
-            } catch (Throwable t) {
-                return;
-            }
-            for (int i = 0; i < count; i++) {
-                View c = null;
-                try {
-                    c = group.getChildAt(i);
-                } catch (Throwable ignored) {
-                    continue;
-                }
-                if (c == null || c == next || c == current) {
-                    continue;
-                }
-                if (!visibleInTree(c, group)) {
-                    continue;
-                }
-                int[] loc = new int[2];
-                c.getLocationOnScreen(loc);
-
-                if (loc[1] + c.getHeight() <= selfTop && loc[1] + c.getHeight() > aboveTop) {
-                    try {
-                        canvas.save();
-                        canvas.clipRect(0, aboveTop, getWidth(), selfTop);
-                        c.draw(canvas);
-                        canvas.restore();
-                        mDrawnViews++;
-                    } catch (Throwable ignored) {
-                    }
-                }
-            }
-            if (!(current instanceof android.view.ViewGroup)) {
-                return;
-            }
-            group = (android.view.ViewGroup) current;
-        }
-    }
-
-    private boolean visibleInTree(View v, View ancestor) {
-        View cur = v;
-        while (cur != null) {
-            if (cur.getVisibility() != VISIBLE) {
-                return false;
-            }
-            if (cur == ancestor) {
-                return true;
-            }
-            android.view.ViewParent p = cur.getParent();
-            cur = p instanceof View ? (View) p : null;
-        }
-        return false;
-    }
-
-    private int lumaAbove() {
-        if (mBackdrop == null || mBackdrop.isRecycled()) {
-            return 255;
-        }
-        int w = mBackdrop.getWidth();
-        int h = mBackdrop.getHeight();
-        int limit = Math.max(1, Math.round(h * 0.30f));
-        int stepX = Math.max(1, w / 24);
-        int stepY = Math.max(1, limit / 6);
-        long sum = 0;
-        int count = 0;
-        for (int y = 0; y < limit; y += stepY) {
-            for (int x = 0; x < w; x += stepX) {
-                int px = mBackdrop.getPixel(x, y);
-                sum += (((px >> 16) & 0xFF) * 30 + ((px >> 8) & 0xFF) * 59
-                        + (px & 0xFF) * 11) / 100;
-                count++;
-            }
-        }
-        return count == 0 ? 255 : (int) (sum / count);
     }
 
     private int averageLuma() {
@@ -418,7 +301,9 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
         boolean overLight = luma > OVER_LIGHT_LUMA;
         mOverLight = overLight;
         try {
-
+            // MIUIX chrome follows the app theme only. Backdrop luminance is
+            // still sampled for the frosted surface, but must not flip icon or
+            // label colors like the liquid-glass renderer does.
             onAppearanceChanged(overLight);
         } catch (Throwable t) {
             LiquidGlassLog.logErr("miuix tabbar appearance failed", t);
@@ -426,8 +311,79 @@ final class MiuixGlassTabBar extends com.example.liquidglass.LiquidGlassTabBar {
 
         if (DEBUG_APPEARANCE && mLogs++ < 20) {
             Log.i("BetterHeybox", "miuix tabbar overLight=" + overLight
-                    + " avg=" + luma + " dark=" + mDark + " aboveOnly=" + mUseAboveOnly
+                    + " avg=" + luma + " dark=" + mDark
                     + " w=" + getWidth() + " h=" + getHeight());
+        }
+    }
+
+    @Override
+    protected void onAppearanceChanged(boolean ignoredBackdropAppearance) {
+        boolean dark = initialDarkGuess();
+        mDark = dark;
+        if (mAppliedThemeDark != null && mAppliedThemeDark == dark) {
+            return;
+        }
+        mAppliedThemeDark = dark;
+        super.onAppearanceChanged(!dark);
+        LiquidGlassInstaller.applyMiuixChrome(this);
+    }
+
+    /** Re-applies stable MIUIX colors and restores a visible icon selection animation. */
+    void onMiuixSelectionChanged() {
+        mAppliedThemeDark = null;
+        onAppearanceChanged(false);
+        try {
+            java.lang.reflect.Field tabsField =
+                    com.example.liquidglass.LiquidGlassTabBar.class
+                            .getDeclaredField("tabs");
+            tabsField.setAccessible(true);
+            Object value = tabsField.get(this);
+            if (!(value instanceof java.util.List)) {
+                return;
+            }
+            int selected = getSelectedIndex();
+            java.util.List<?> holders = (java.util.List<?>) value;
+            for (int i = 0; i < holders.size(); i++) {
+                Object holder = holders.get(i);
+                if (holder == null) {
+                    continue;
+                }
+                ImageView icon = null;
+                for (java.lang.reflect.Field field : holder.getClass().getDeclaredFields()) {
+                    field.setAccessible(true);
+                    Object child = field.get(holder);
+                    if (child instanceof ImageView) {
+                        icon = (ImageView) child;
+                        break;
+                    }
+                }
+                if (icon == null) {
+                    continue;
+                }
+                boolean active = i == selected;
+                icon.animate().cancel();
+                icon.setSelected(active);
+                icon.setActivated(active);
+                icon.refreshDrawableState();
+                if (!active) {
+                    icon.setScaleX(1f);
+                    icon.setScaleY(1f);
+                    icon.setAlpha(1f);
+                    continue;
+                }
+                icon.setScaleX(0.82f);
+                icon.setScaleY(0.82f);
+                icon.setAlpha(0.72f);
+                icon.animate()
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .alpha(1f)
+                        .setDuration(260L)
+                        .setInterpolator(new OvershootInterpolator(1.35f))
+                        .start();
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("miuix icon selection animation failed", t);
         }
     }
 

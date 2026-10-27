@@ -16,6 +16,13 @@ import android.widget.RelativeLayout;
 
 import com.better.heybox.GlassProvider;
 
+import java.util.ArrayDeque;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
+
 public final class LiquidGlassInstaller {
 
     private static final String ID_ROOT = "vg_main_root";
@@ -205,6 +212,33 @@ public final class LiquidGlassInstaller {
 
     private static volatile BarSnapshot sSnapshot;
 
+    private static final class MiuixInsetSnapshot {
+        final int left;
+        final int top;
+        final int right;
+        final int bottom;
+        final boolean clipToPadding;
+        final boolean viewGroup;
+
+        MiuixInsetSnapshot(View view) {
+            left = view.getPaddingLeft();
+            top = view.getPaddingTop();
+            right = view.getPaddingRight();
+            bottom = view.getPaddingBottom();
+            viewGroup = view instanceof ViewGroup;
+            clipToPadding = !viewGroup || ((ViewGroup) view).getClipToPadding();
+        }
+    }
+
+    private static final WeakHashMap<View, MiuixInsetSnapshot> sMiuixInsetSnapshots =
+            new WeakHashMap<>();
+    private static java.lang.ref.WeakReference<ViewGroup> sMiuixInsetContentRef =
+            new java.lang.ref.WeakReference<>(null);
+    private static java.lang.ref.WeakReference<ViewGroup> sMiuixInsetHostRef =
+            new java.lang.ref.WeakReference<>(null);
+    private static ViewTreeObserver.OnGlobalLayoutListener sMiuixInsetListener;
+    private static int sMiuixInsetFallback;
+
     private static volatile int sSyncGen;
 
     private static void uninstallGlass(Activity activity) {
@@ -223,6 +257,7 @@ public final class LiquidGlassInstaller {
             View content = findViewByName(activity, ID_CONTENT);
             unwrapCheckedListener(bar);
             removeMidPreDraw(midTab);
+            clearMiuixContentInsets();
             if (content != null && snap != null
                     && content.getLayoutParams() instanceof RelativeLayout.LayoutParams) {
                 RelativeLayout.LayoutParams clp =
@@ -292,6 +327,7 @@ public final class LiquidGlassInstaller {
     }
 
     private static void resetGlassState() {
+        clearMiuixContentInsets();
         sTabBarActive = false;
         sTabBarRef = EMPTY_BAR_REF;
         sRadioBarRef = EMPTY_RADIO_REF;
@@ -316,6 +352,182 @@ public final class LiquidGlassInstaller {
         sNavPad = 0;
         sSnapshot = null;
         resetWidthAnimState();
+    }
+
+    private static void configureMiuixContentInsets(ViewGroup content, ViewGroup host,
+                                                     int fallbackInset) {
+        clearMiuixContentInsets();
+        if (content == null || host == null) {
+            return;
+        }
+        sMiuixInsetContentRef = new java.lang.ref.WeakReference<>(content);
+        sMiuixInsetHostRef = new java.lang.ref.WeakReference<>(host);
+        sMiuixInsetFallback = Math.max(0, fallbackInset);
+        sMiuixInsetListener = new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                ViewGroup insetContent = sMiuixInsetContentRef.get();
+                ViewGroup insetHost = sMiuixInsetHostRef.get();
+                if (insetContent == null || insetHost == null) {
+                    return;
+                }
+                int inset = insetHost.getHeight();
+                if (inset <= 0) {
+                    inset = sMiuixInsetFallback;
+                }
+                applyMiuixContentInsets(insetContent, inset);
+            }
+        };
+        content.getViewTreeObserver().addOnGlobalLayoutListener(sMiuixInsetListener);
+        applyMiuixContentInsets(content, sMiuixInsetFallback);
+    }
+
+    private static void applyMiuixContentInsets(ViewGroup content, int bottomInset) {
+        if (content == null || bottomInset <= 0) {
+            return;
+        }
+        Set<View> targets = new HashSet<>();
+        for (int i = 0; i < content.getChildCount(); i++) {
+            View pageRoot = content.getChildAt(i);
+            if (pageRoot == null) {
+                continue;
+            }
+            boolean foundScrollable = collectMiuixInsetTargets(pageRoot, targets);
+            if (!foundScrollable) {
+                targets.add(pageRoot);
+            }
+        }
+
+        Iterator<Map.Entry<View, MiuixInsetSnapshot>> iterator =
+                sMiuixInsetSnapshots.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<View, MiuixInsetSnapshot> entry = iterator.next();
+            if (!targets.contains(entry.getKey())) {
+                restoreMiuixInset(entry.getKey(), entry.getValue());
+                iterator.remove();
+            }
+        }
+
+        for (View target : targets) {
+            MiuixInsetSnapshot snapshot = sMiuixInsetSnapshots.get(target);
+            if (snapshot == null) {
+                snapshot = new MiuixInsetSnapshot(target);
+                sMiuixInsetSnapshots.put(target, snapshot);
+            }
+            int targetBottom = snapshot.bottom + bottomInset;
+            if (target.getPaddingLeft() != snapshot.left
+                    || target.getPaddingTop() != snapshot.top
+                    || target.getPaddingRight() != snapshot.right
+                    || target.getPaddingBottom() != targetBottom) {
+                target.setPadding(snapshot.left, snapshot.top, snapshot.right, targetBottom);
+            }
+            if (target instanceof ViewGroup) {
+                ((ViewGroup) target).setClipToPadding(false);
+            }
+        }
+    }
+
+    private static boolean collectMiuixInsetTargets(View pageRoot, Set<View> targets) {
+        ArrayDeque<View> queue = new ArrayDeque<>();
+        queue.add(pageRoot);
+        View bestTarget = null;
+        long bestArea = -1L;
+        int visited = 0;
+        while (!queue.isEmpty() && visited++ < 1024) {
+            View view = queue.removeFirst();
+            if (isVerticalMiuixInsetTarget(view, pageRoot)) {
+                long area = (long) Math.max(1, view.getWidth())
+                        * Math.max(1, view.getHeight());
+                if (area > bestArea) {
+                    bestArea = area;
+                    bestTarget = view;
+                }
+                // Do not inspect item views inside a scrolling viewport. Personal pages
+                // contain horizontal RecyclerViews whose padding must remain untouched.
+                continue;
+            }
+            if (view instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) view;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    View child = group.getChildAt(i);
+                    if (child != null) {
+                        queue.addLast(child);
+                    }
+                }
+            }
+        }
+        if (bestTarget != null) {
+            targets.add(bestTarget);
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isVerticalMiuixInsetTarget(View view, View pageRoot) {
+        if (view instanceof android.widget.AbsListView
+                || view instanceof android.widget.ScrollView
+                || view instanceof android.webkit.WebView) {
+            return true;
+        }
+        String name = view.getClass().getName();
+        if (name.endsWith("NestedScrollView")) {
+            return true;
+        }
+        if (!name.endsWith("RecyclerView")) {
+            return false;
+        }
+
+        // RecyclerView is used for both the full-page vertical feed and several
+        // short horizontal carousels. Prefer its LayoutManager orientation when
+        // available, then use viewport geometry as a safe fallback.
+        try {
+            Object layoutManager = view.getClass().getMethod("getLayoutManager").invoke(view);
+            if (layoutManager != null) {
+                Object orientation = layoutManager.getClass()
+                        .getMethod("getOrientation").invoke(layoutManager);
+                if (orientation instanceof Number) {
+                    return ((Number) orientation).intValue() == 1;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (view.canScrollVertically(-1) || view.canScrollVertically(1)) {
+            return true;
+        }
+        int pageHeight = pageRoot == null ? 0 : pageRoot.getHeight();
+        return pageHeight <= 0 || view.getHeight() >= pageHeight / 3;
+    }
+
+    private static void clearMiuixContentInsets() {
+        ViewGroup content = sMiuixInsetContentRef.get();
+        ViewTreeObserver.OnGlobalLayoutListener listener = sMiuixInsetListener;
+        if (content != null && listener != null) {
+            try {
+                ViewTreeObserver observer = content.getViewTreeObserver();
+                if (observer.isAlive()) {
+                    observer.removeOnGlobalLayoutListener(listener);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        for (Map.Entry<View, MiuixInsetSnapshot> entry : sMiuixInsetSnapshots.entrySet()) {
+            restoreMiuixInset(entry.getKey(), entry.getValue());
+        }
+        sMiuixInsetSnapshots.clear();
+        sMiuixInsetContentRef = new java.lang.ref.WeakReference<>(null);
+        sMiuixInsetHostRef = new java.lang.ref.WeakReference<>(null);
+        sMiuixInsetListener = null;
+        sMiuixInsetFallback = 0;
+    }
+
+    private static void restoreMiuixInset(View view, MiuixInsetSnapshot snapshot) {
+        if (view == null || snapshot == null) {
+            return;
+        }
+        view.setPadding(snapshot.left, snapshot.top, snapshot.right, snapshot.bottom);
+        if (snapshot.viewGroup && view instanceof ViewGroup) {
+            ((ViewGroup) view).setClipToPadding(snapshot.clipToPadding);
+        }
     }
 
     private static int sClassicBarHeight = -1;
@@ -557,8 +769,16 @@ public final class LiquidGlassInstaller {
         if (content != null && content.getParent() == root) {
             RelativeLayout.LayoutParams clp =
                     (RelativeLayout.LayoutParams) content.getLayoutParams();
-            clp.getRules()[RelativeLayout.ABOVE] = miuixDocked ? host.getId() : 0;
+            // MIUIX is a real translucent dock: the page must continue behind it so
+            // the renderer can sample the pixels directly underneath the bar.
+            clp.getRules()[RelativeLayout.ABOVE] = 0;
             content.setLayoutParams(clp);
+            if (miuixDocked) {
+                int estimatedBarHeight = barHeightSpec > 0
+                        ? barHeightSpec : Math.max(bar.getMeasuredHeight(), Math.round(56f * density));
+                configureMiuixContentInsets(content, host,
+                        estimatedBarHeight + origBarPadBottom + navPad);
+            }
         }
 
         root.requestLayout();
@@ -750,6 +970,7 @@ public final class LiquidGlassInstaller {
             if (!(tabBar instanceof MiuixGlassTabBar)) {
                 applyQwea0Params(tabBar, content, density, false);
             } else {
+                ((MiuixGlassTabBar) tabBar).setMiuixBackdropSource(content);
                 tabBar.setPadding(tabBar.getPaddingLeft(), tabBar.getPaddingTop(),
                         tabBar.getPaddingRight(), Math.max(0, navPad));
             }
@@ -764,6 +985,9 @@ public final class LiquidGlassInstaller {
                 @Override
                 public kotlin.Unit invoke(Integer index) {
                     try {
+                        if (tabBar instanceof MiuixGlassTabBar) {
+                            ((MiuixGlassTabBar) tabBar).onMiuixSelectionChanged();
+                        }
                         if (index != null && sSearchTabIndex >= 0
                                 && index == sSearchTabIndex) {
 
@@ -2716,6 +2940,11 @@ public final class LiquidGlassInstaller {
     private static void applyTabBarOverLight(
             com.example.liquidglass.LiquidGlassTabBar tabBar, boolean darkBar) {
         boolean miuix = tabBar instanceof MiuixGlassTabBar;
+        if (miuix) {
+            int mode = tabBar.getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            darkBar = mode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        }
         int selectedColor = miuix
                 ? com.better.heybox.ThemeUtils.resolveAccent(tabBar.getContext())
                 : (darkBar ? 0xFFFFFFFF : 0xE6000000);
@@ -2774,6 +3003,16 @@ public final class LiquidGlassInstaller {
         tabBar.invalidate();
         LiquidGlassLog.log(android.util.Log.INFO,
                 "chrome theme applied: dark=" + darkBar + " targets=" + applied);
+    }
+
+    static void applyMiuixChrome(MiuixGlassTabBar tabBar) {
+        if (tabBar == null) {
+            return;
+        }
+        int mode = tabBar.getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        applyTabBarOverLight(tabBar,
+                mode == android.content.res.Configuration.UI_MODE_NIGHT_YES);
     }
 
     private static boolean isSystemNight(Activity activity) {

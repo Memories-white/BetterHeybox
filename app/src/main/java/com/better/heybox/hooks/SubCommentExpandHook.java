@@ -8,6 +8,7 @@ import android.view.ViewGroup;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -23,13 +24,9 @@ public final class SubCommentExpandHook {
 
     private static final String ADAPTER_CLASS =
             "com.max.xiaoheihe.module.bbs.adapter.CommentAdapterV2";
-    private static final String HOLDER_CLASS = "ii.xf0";
     private static final String COMMENTS_OBJ_CLASS = "com.max.basebbs.bean.BBSCommentsObj";
     private static final String COMMENT_OBJ_CLASS = "com.max.basebbs.bean.BBSCommentObj";
     private static final String SUB_COMMENT_VIEW_CLASS = "com.max.xiaoheihe.view.SubCommentView";
-    private static final String BIND_METHOD = "m0";
-
-    private static final String FIELD_HOLDER_SUB = "f";
     private static final String FIELD_HAS_MORE = "p";
     private static final String FIELD_LOADING = "s";
     private static final String FIELD_TOTAL_LIST = "o";
@@ -77,7 +74,6 @@ public final class SubCommentExpandHook {
     private final ArrayDeque<Pending> pending = new ArrayDeque<>();
     private boolean drainScheduled;
 
-    private static volatile Field sFieldHolderSub;
     private static volatile Field sFieldHasMore;
     private static volatile Field sFieldLoading;
     private static volatile Field sFieldTotalList;
@@ -100,12 +96,10 @@ public final class SubCommentExpandHook {
     public void install(ClassLoader cl) {
         try {
             Class<?> adapterClass = Class.forName(ADAPTER_CLASS, false, cl);
-            Class<?> holderClass = Class.forName(HOLDER_CLASS, false, cl);
             Class<?> commentsObjClass = Class.forName(COMMENTS_OBJ_CLASS, false, cl);
             Class<?> commentObjClass = Class.forName(COMMENT_OBJ_CLASS, false, cl);
             Class<?> subCommentViewClass = Class.forName(SUB_COMMENT_VIEW_CLASS, false, cl);
 
-            sFieldHolderSub = findField(holderClass, FIELD_HOLDER_SUB);
             sFieldHasMore = findField(subCommentViewClass, FIELD_HAS_MORE);
             sFieldLoading = findField(subCommentViewClass, FIELD_LOADING);
             sFieldTotalList = findField(subCommentViewClass, FIELD_TOTAL_LIST);
@@ -123,8 +117,11 @@ public final class SubCommentExpandHook {
                     METHOD_RENDER_FOOTER, boolean.class);
             sMethodRenderFooter.setAccessible(true);
 
-            Method bind = adapterClass.getDeclaredMethod(BIND_METHOD,
-                    holderClass, commentsObjClass);
+            Method bind = findCommentBindMethod(adapterClass, commentsObjClass,
+                    subCommentViewClass);
+            if (bind == null) {
+                throw new NoSuchMethodException("comment bind method");
+            }
             bind.setAccessible(true);
             module.hook(bind).intercept(chain -> {
                 Object holder = chain.getArg(0);
@@ -132,7 +129,8 @@ public final class SubCommentExpandHook {
                 Object result = chain.proceed();
                 try {
                     if (module.isEnabled(App.KEY_COMMENT_AUTO_EXPAND, false)) {
-                        onCommentBound(holder, commentsObj);
+                        View subCommentView = resolveSubCommentView(holder, subCommentViewClass);
+                        onCommentBound(subCommentView, commentsObj);
                     }
                 } catch (Throwable t) {
                     warnOnce("bound", "自动展开回复：绑定后处理异常，已放行: " + t);
@@ -140,16 +138,14 @@ public final class SubCommentExpandHook {
                 return result;
             });
 
-            boolean ready = sFieldHolderSub != null
-                    && (sFieldHasMore != null || sMethodHasMore != null)
-                    && sFieldFooter != null
+            boolean ready = (sFieldHasMore != null || sMethodHasMore != null)
                     && sMethodTotalList != null
                     && sMethodCommentId != null;
             Checkpoint.mark("自动展开回复安装: %b", ready);
             module.logd(ready ? Log.INFO : Log.WARN, module.TAG,
                     (ready ? "✔ 自动展开回复 Hook 已安装：" : "△ 自动展开回复 Hook 已挂，但字段解析不全：")
-                            + ADAPTER_CLASS + "#" + BIND_METHOD + "(" + HOLDER_CLASS + ", "
-                            + COMMENTS_OBJ_CLASS + ")"
+                            + ADAPTER_CLASS + "#" + bind.getName() + "("
+                            + bind.getParameterTypes()[0].getName() + ", " + COMMENTS_OBJ_CLASS + ")"
                             + " [hasMore=" + (sFieldHasMore != null || sMethodHasMore != null)
                             + " loading=" + (sFieldLoading != null)
                             + " footer=" + (sFieldFooter != null)
@@ -159,23 +155,110 @@ public final class SubCommentExpandHook {
 
             Checkpoint.mark("自动展开回复安装: 跳过（本版本无该挂点）");
             module.logd(Log.WARN, module.TAG,
-                    "△ 自动展开回复 Hook 跳过：当前版本无 " + ADAPTER_CLASS + "#" + BIND_METHOD
-                            + "(" + HOLDER_CLASS + ", " + COMMENTS_OBJ_CLASS + ") 挂点");
+                    "△ 自动展开回复 Hook 跳过：当前版本无 " + ADAPTER_CLASS
+                            + "#public(*, " + COMMENTS_OBJ_CLASS + ") 挂点");
         } catch (Throwable t) {
             Checkpoint.mark("自动展开回复安装: 失败");
             module.logd(Log.ERROR, module.TAG, "✘ 自动展开回复 Hook 安装失败", t);
         }
     }
 
-    private void onCommentBound(Object holder, Object commentsObj) {
-        if (holder == null || commentsObj == null) {
+    /**
+     * 优先选择适配器公开的两参数绑定入口。该入口在 1.3.397 是具体 holder 的混淆方法，
+     * 1.3.398 则变成接收通用 ViewHolder 的 B0；按签名定位比记住短混淆名稳定。
+     */
+    private static Method findCommentBindMethod(Class<?> adapterClass,
+                                                Class<?> commentsObjClass,
+                                                Class<?> subCommentViewClass) {
+        Method holderSpecific = null;
+        for (Method method : adapterClass.getDeclaredMethods()) {
+            Class<?>[] params = method.getParameterTypes();
+            if (method.getReturnType() != void.class || params.length != 2
+                    || params[1] != commentsObjClass) {
+                continue;
+            }
+            if (Modifier.isPublic(method.getModifiers())) {
+                return method;
+            }
+            if (hasFieldAssignableTo(params[0], subCommentViewClass)) {
+                holderSpecific = method;
+            }
+        }
+        return holderSpecific;
+    }
+
+    private static boolean hasFieldAssignableTo(Class<?> type, Class<?> wanted) {
+        for (Class<?> current = type; current != null && current != Object.class;
+             current = current.getSuperclass()) {
+            for (Field field : current.getDeclaredFields()) {
+                if (wanted.isAssignableFrom(field.getType())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static View resolveSubCommentView(Object holder, Class<?> subCommentViewClass) {
+        if (holder == null || subCommentViewClass == null) {
+            return null;
+        }
+        if (subCommentViewClass.isInstance(holder) && holder instanceof View) {
+            return (View) holder;
+        }
+        List<View> roots = new java.util.ArrayList<>();
+        for (Class<?> current = holder.getClass(); current != null && current != Object.class;
+             current = current.getSuperclass()) {
+            for (Field field : current.getDeclaredFields()) {
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(holder);
+                    if (subCommentViewClass.isInstance(value) && value instanceof View) {
+                        return (View) value;
+                    }
+                    if (value instanceof View) {
+                        roots.add((View) value);
+                    }
+                } catch (Throwable ignored) {
+                    // 继续从 itemView 或其它 View 字段寻找。
+                }
+            }
+        }
+        for (View root : roots) {
+            View found = findSubCommentInTree(root, subCommentViewClass);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static View findSubCommentInTree(View root, Class<?> subCommentViewClass) {
+        ArrayDeque<View> queue = new ArrayDeque<>();
+        queue.add(root);
+        int visited = 0;
+        while (!queue.isEmpty() && visited++ < 1500) {
+            View view = queue.removeFirst();
+            if (subCommentViewClass.isInstance(view)) {
+                return view;
+            }
+            if (view instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) view;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    View child = group.getChildAt(i);
+                    if (child != null) {
+                        queue.addLast(child);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private void onCommentBound(View subCommentView, Object commentsObj) {
+        if (subCommentView == null || commentsObj == null) {
             return;
         }
-        Object raw = readObject(sFieldHolderSub, holder);
-        if (!(raw instanceof View)) {
-            return;
-        }
-        View subCommentView = (View) raw;
         String commentId = firstCommentId(commentList(commentsObj));
         if (commentId == null || commentId.isEmpty()) {
             return;
