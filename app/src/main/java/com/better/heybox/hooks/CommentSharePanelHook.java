@@ -36,9 +36,9 @@ public final class CommentSharePanelHook {
     private static final String COMMENT_OBJ_CLASS = "com.max.basebbs.bean.BBSCommentObj";
     /**
      * 评论区用户意图在宿主更新后会整体换包名。1.3.398 使用 {@code id.b$c}，
-     * 旧版使用 {@code hd.b$c}；两者都是持有「主评论、目标评论」的 Reply intent。
+     * 1.3.399 与部分旧版使用 {@code hd.b$c}；两者都是持有「主评论、目标评论」的 Reply intent。
      */
-    private static final String[] REPLY_INTENT_CLASS_CANDIDATES = {"id.b$c", "hd.b$c"};
+    private static final String[] REPLY_INTENT_CLASS_CANDIDATES = {"hd.b$c", "id.b$c"};
     /**
      * Kotlin {@code Function1} 接口的混淆类名，逐版本轮换。全树唯一实现类的判据是
      * 声明了 {@code public abstract invoke(Ljava/lang/Object;)Ljava/lang/Object;}。

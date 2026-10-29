@@ -29,6 +29,11 @@ public final class TargetHintHook {
 
     private static final AtomicBoolean sResolving = new AtomicBoolean(false);
 
+    private static final String[] USER_UTIL_CANDIDATES = {
+            "com.max.xiaoheihe.utils.x0", // 1.3.399+
+            "com.max.xiaoheihe.utils.u0"  // 1.3.398 and earlier
+    };
+
     public TargetHintHook(MainModule module) {
         this.module = module;
     }
@@ -91,32 +96,39 @@ public final class TargetHintHook {
             Class<?> userCls = Class.forName("com.max.xiaoheihe.bean.account.User", false, cl);
             Class<?> detailCls = Class.forName(
                     "com.max.xiaoheihe.bean.account.AccountDetailObj", false, cl);
-            Class<?> util = Class.forName("com.max.xiaoheihe.utils.u0", false, cl);
-            for (Method m : util.getDeclaredMethods()) {
-                if (m.getParameterTypes().length != 0
-                        || !Modifier.isStatic(m.getModifiers())
-                        || !userCls.equals(m.getReturnType())) {
+            for (String utilName : USER_UTIL_CANDIDATES) {
+                Class<?> util;
+                try {
+                    util = Class.forName(utilName, false, cl);
+                } catch (Throwable ignored) {
                     continue;
                 }
-                try {
-                    Object user = m.invoke(null);
-                    if (user == null) {
+                for (Method m : util.getDeclaredMethods()) {
+                    if (m.getParameterTypes().length != 0
+                            || !Modifier.isStatic(m.getModifiers())
+                            || !userCls.equals(m.getReturnType())) {
                         continue;
                     }
-                    Method login = userCls.getMethod("isLoginFlag");
-                    if (!(Boolean) login.invoke(user)) {
-                        continue;
+                    try {
+                        Object user = m.invoke(null);
+                        if (user == null) {
+                            continue;
+                        }
+                        Method login = userCls.getMethod("isLoginFlag");
+                        if (!(Boolean) login.invoke(user)) {
+                            continue;
+                        }
+                        Object detail = userCls.getMethod("getAccount_detail").invoke(user);
+                        if (detail == null) {
+                            continue;
+                        }
+                        Object uid = detailCls.getMethod("getUserid").invoke(detail);
+                        if (uid instanceof String && !((String) uid).isEmpty()) {
+                            sUidCache = (String) uid;
+                            return sUidCache;
+                        }
+                    } catch (Throwable ignored) {
                     }
-                    Object detail = userCls.getMethod("getAccount_detail").invoke(user);
-                    if (detail == null) {
-                        continue;
-                    }
-                    Object uid = detailCls.getMethod("getUserid").invoke(detail);
-                    if (uid instanceof String && !((String) uid).isEmpty()) {
-                        sUidCache = (String) uid;
-                        return sUidCache;
-                    }
-                } catch (Throwable ignored) {
                 }
             }
         } catch (Throwable t) {
@@ -128,19 +140,33 @@ public final class TargetHintHook {
     private void hookUidCapture(ClassLoader cl) {
         try {
             Class<?> x0 = Class.forName("com.max.xiaoheihe.utils.x0", false, cl);
-            Method extract = x0.getDeclaredMethod("U", String.class, String.class);
-            module.hook(extract).intercept(chain -> {
-                Object result = chain.proceed();
-                try {
-                    Object key = chain.getArgs().get(1);
-                    if ("heybox_id".equals(key) && result instanceof String
-                            && !((String) result).isEmpty() && !"-1".equals(result)) {
-                        sCapturedUid = (String) result;
-                    }
-                } catch (Throwable ignored) {
+            boolean installed = false;
+            for (Method extract : x0.getDeclaredMethods()) {
+                Class<?>[] params = extract.getParameterTypes();
+                if (!Modifier.isStatic(extract.getModifiers())
+                        || extract.getReturnType() != String.class
+                        || params.length != 2
+                        || params[0] != String.class
+                        || params[1] != String.class) {
+                    continue;
                 }
-                return result;
-            });
+                installed = true;
+                module.hook(extract).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        Object key = chain.getArgs().get(1);
+                        if ("heybox_id".equals(key) && result instanceof String
+                                && !((String) result).isEmpty() && !"-1".equals(result)) {
+                            sCapturedUid = (String) result;
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    return result;
+                });
+            }
+            if (!installed) {
+                module.logd(Log.WARN, MainModule.TAG, "提示信息被动 Hook 无匹配方法");
+            }
         } catch (Throwable t) {
             module.logd(Log.WARN, MainModule.TAG, "提示信息被动 Hook 未安装: " + t);
         }

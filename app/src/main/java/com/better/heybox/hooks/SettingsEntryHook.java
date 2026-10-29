@@ -1311,13 +1311,24 @@ private static SettingsGroup withExtraRows(SettingsGroup g, SwitchDef[] extra) {
         }
     }
 
-    private static final String[] SETUP_METHOD_CANDIDATES = {
+    private static final String[] SETUP_METHOD_CANDIDATES_1399 = {
+            "N3", // 1.3.399 (1148): onResume() 调用的设置刷新方法
+            "J3", "N1", "L1", "G1", "S1", "U1"
+    };
+
+    private static final String[] SETUP_METHOD_CANDIDATES_LEGACY = {
             "J3", // 1.3.398 (1142): onResume() 调用的设置刷新方法
-            "N1", "L1", "G1", "S1", "U1"
+            "N1", "L1", "G1", "S1", "U1", "N3"
     };
 
     private Method findSetupMethod(Class<?> clazz) {
-        for (String name : SETUP_METHOD_CANDIDATES) {
+        Context context = App.resolveAppContext();
+        boolean is1399 = context != null
+                && VersionUtils.isHeyboxBuild(context, "1.3.399", 1148L);
+        String[] candidates = is1399
+                ? SETUP_METHOD_CANDIDATES_1399
+                : SETUP_METHOD_CANDIDATES_LEGACY;
+        for (String name : candidates) {
             try {
                 return clazz.getDeclaredMethod(name);
             } catch (NoSuchMethodException ignored) {

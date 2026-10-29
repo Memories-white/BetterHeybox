@@ -71,7 +71,8 @@ public class MainModule extends XposedModule {
             Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
                     "1.3.396",
                     "1.3.397",
-                    "1.3.398"
+                    "1.3.398",
+                    "1.3.399"
             )));
 
     @Override

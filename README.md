@@ -18,7 +18,7 @@
 > 本项目授权条款以 [`LICENSE`](LICENSE)为准，
 
 > [!Note]
->本应用最低兼容 [小黑盒 1.3.396](https://github.com/Mrmiaomrzh/HeyboxAPK/releases) 版本（推荐 1.3.398-1142），更低版本出现的问题不会进行处理
+>本应用最低兼容 [小黑盒 1.3.396](https://github.com/Mrmiaomrzh/HeyboxAPK/releases) 版本（推荐 1.3.399-1148），更低版本出现的问题不会进行处理
 
 > [!WARNING]
 > 使用免Root框架`「NPatch」`时，需要把`破解签名校验`改成`Extreme`，不然会有缺少参数闪退的问题
