@@ -32,6 +32,9 @@ final class GlassConfig {
     static volatile boolean adaptiveChrome = DEFAULT_ADAPTIVE;
     static volatile boolean immersiveGestureNavigation = DEFAULT_IMMERSIVE;
     static volatile boolean fitTabs = DEFAULT_FIT_TABS;
+    // 云控图标可能在启动阶段长期停留在占位资源。MIUIX 固定使用
+    // 宿主内置的经典导航资源，确保升级用户也不会继续读取旧开关值。
+    static final boolean followCloudBottomBar = false;
     static volatile int barHeightDp = DEFAULT_BAR_HEIGHT;
     static volatile int barOffsetDp = DEFAULT_BAR_OFFSET;
 

@@ -1684,6 +1684,280 @@ public final class LiquidGlassInstaller {
         }
     }
 
+    private static Drawable hostTabDrawable(android.widget.RadioButton button) {
+        if (button == null) {
+            return null;
+        }
+        try {
+            Drawable[] absolute = button.getCompoundDrawables();
+            if (absolute != null && absolute.length > 1 && absolute[1] != null) {
+                return absolute[1];
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Drawable[] relative = button.getCompoundDrawablesRelative();
+            if (relative != null && relative.length > 1) {
+                return relative[1];
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * Hashes a small, normalized rendering of a host icon. Remote configuration
+     * can update the pixels inside the same drawable instance, so object
+     * identity alone is not a sufficient change signal. Normalizing to the
+     * enabled/unselected state keeps ordinary tab selection animations out of
+     * the fingerprint.
+     */
+    private static int normalizedDrawableFingerprint(
+            Drawable drawable, android.widget.RadioButton button) {
+        if (drawable == null || button == null) {
+            return 0;
+        }
+        android.graphics.Rect oldBounds = drawable.copyBounds();
+        int oldLevel = drawable.getLevel();
+        int[] oldState = drawable.getState();
+        android.graphics.Bitmap bitmap = null;
+        try {
+            drawable.setState(new int[]{android.R.attr.state_enabled});
+            drawable.setLevel(0);
+            drawable.jumpToCurrentState();
+            int size = 18;
+            bitmap = android.graphics.Bitmap.createBitmap(
+                    size, size, android.graphics.Bitmap.Config.ARGB_8888);
+            drawable.setBounds(0, 0, size, size);
+            drawable.draw(new android.graphics.Canvas(bitmap));
+            int[] pixels = new int[size * size];
+            bitmap.getPixels(pixels, 0, size, 0, 0, size, size);
+            int hash = 0x811C9DC5;
+            for (int pixel : pixels) {
+                hash ^= pixel;
+                hash *= 0x01000193;
+            }
+            return hash;
+        } catch (Throwable ignored) {
+            return 0;
+        } finally {
+            try {
+                drawable.setBounds(oldBounds);
+                drawable.setLevel(oldLevel);
+                drawable.setState(oldState == null ? new int[0] : oldState);
+                drawable.jumpToCurrentState();
+            } catch (Throwable ignored) {
+            }
+            if (bitmap != null) {
+                bitmap.recycle();
+            }
+        }
+    }
+
+    /**
+     * Adds the host presentation to the rebuild signature. Heybox can replace
+     * bottom-tab labels and icons after launch through remote configuration
+     * without changing the RadioButton IDs. ID-only signatures therefore keep
+     * the early placeholder diamonds forever.
+     */
+    private static void appendHostPresentationSignature(
+            java.lang.StringBuilder sig,
+            android.widget.RadioGroup bar,
+            java.util.List<Integer> tokens) {
+        for (int token : tokens) {
+            if (token == TOKEN_SEARCH) {
+                sig.append("|search");
+                continue;
+            }
+            android.widget.RadioButton button = findButtonById(bar, token);
+            sig.append('|').append(token).append(':');
+            if (button == null) {
+                sig.append("missing");
+                continue;
+            }
+            CharSequence title = button.getText();
+            sig.append(title == null ? "" : title.toString()).append('@');
+            Drawable icon = hostTabDrawable(button);
+            if (icon == null) {
+                sig.append("none");
+                continue;
+            }
+            sig.append(icon.getClass().getName()).append('#');
+            // Track replacement of the drawable object itself. ConstantState,
+            // level and bitmap generation can change while a stateful icon is
+            // merely selected; including them caused a rebuild 500 ms after
+            // each tap and cancelled the MIUIX scale animation.
+            sig.append(System.identityHashCode(icon));
+            sig.append('/').append(icon.getIntrinsicWidth())
+                    .append('x').append(icon.getIntrinsicHeight())
+                    .append("/px=").append(normalizedDrawableFingerprint(icon, button));
+            if (icon instanceof android.graphics.drawable.BitmapDrawable) {
+                android.graphics.Bitmap bitmap =
+                        ((android.graphics.drawable.BitmapDrawable) icon).getBitmap();
+                if (bitmap != null) {
+                    sig.append('/').append(System.identityHashCode(bitmap))
+                            .append('/').append(bitmap.getWidth())
+                            .append('x').append(bitmap.getHeight())
+                            .append("/gen=").append(bitmap.getGenerationId());
+                }
+            }
+        }
+    }
+
+    private static Drawable copyHostTabDrawable(android.widget.RadioButton button) {
+        Drawable source = hostTabDrawable(button);
+        if (source == null) {
+            return null;
+        }
+        try {
+            Drawable.ConstantState state = source.getConstantState();
+            if (state != null) {
+                Drawable copy;
+                try {
+                    copy = state.newDrawable(button.getResources(),
+                            button.getContext().getTheme());
+                } catch (Throwable ignored) {
+                    copy = state.newDrawable(button.getResources());
+                }
+                if (copy != null) {
+                    copy = copy.mutate();
+                    copy.setBounds(source.getBounds());
+                    copy.setLevel(source.getLevel());
+                    if (copy.isStateful()) {
+                        copy.setState(button.getDrawableState());
+                    }
+                    int sourceFingerprint = normalizedDrawableFingerprint(source, button);
+                    int copyFingerprint = normalizedDrawableFingerprint(copy, button);
+                    if (sourceFingerprint == 0 || copyFingerprint == 0
+                            || sourceFingerprint == copyFingerprint) {
+                        return copy;
+                    }
+                    LiquidGlassLog.log(android.util.Log.INFO,
+                            "tabbar: stale ConstantState, snapshot live cloud icon");
+                }
+            }
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("tabbar: clone host icon failed", t);
+        }
+
+        // Remote image drawables do not always expose ConstantState. Rasterize
+        // the currently rendered icon instead of sharing and mutating Heybox's
+        // own drawable instance.
+        try {
+            int width = source.getIntrinsicWidth();
+            int height = source.getIntrinsicHeight();
+            if (width <= 0) {
+                width = Math.max(1, Math.round(24f * button.getResources()
+                        .getDisplayMetrics().density));
+            }
+            if (height <= 0) {
+                height = width;
+            }
+            width = Math.max(1, Math.min(width, 256));
+            height = Math.max(1, Math.min(height, 256));
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(
+                    width, height, android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap);
+            android.graphics.Rect oldBounds = source.copyBounds();
+            try {
+                source.setBounds(0, 0, width, height);
+                source.draw(canvas);
+            } finally {
+                source.setBounds(oldBounds);
+            }
+            return new android.graphics.drawable.BitmapDrawable(
+                    button.getResources(), bitmap);
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("tabbar: rasterize host icon failed", t);
+            return null;
+        }
+    }
+
+    private static String resourceEntryName(View view) {
+        if (view == null || view.getId() == View.NO_ID) {
+            return "";
+        }
+        try {
+            return view.getResources().getResourceEntryName(view.getId());
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private static CharSequence classicTabTitle(android.widget.RadioButton button) {
+        String entry = resourceEntryName(button);
+        switch (entry) {
+            case "rb_1":
+                return "首页";
+            case "rb_2":
+                return "热点";
+            case "rb_4":
+                return "游戏库";
+            case "rb_5":
+                return "我";
+            default:
+                return button == null ? "" : button.getText();
+        }
+    }
+
+    private static String classicTabDrawableName(android.widget.RadioButton button) {
+        String entry = resourceEntryName(button);
+        switch (entry) {
+            case "rb_1":
+                return "nav_bar_recommend";
+            case "rb_2":
+                return "nav_bar_bbs";
+            case "rb_4":
+                return "nav_bar_store";
+            case "rb_5":
+                return "nav_bar_me";
+            default:
+                return "";
+        }
+    }
+
+    private static Drawable classicTabDrawable(android.widget.RadioButton button) {
+        if (button == null) {
+            return null;
+        }
+        String name = classicTabDrawableName(button);
+        if (name.isEmpty()) {
+            return copyHostTabDrawable(button);
+        }
+        try {
+            android.content.Context context = button.getContext();
+            int id = context.getResources().getIdentifier(
+                    name, "drawable", context.getPackageName());
+            if (id != 0) {
+                Drawable drawable = context.getDrawable(id);
+                if (drawable != null) {
+                    return drawable.mutate();
+                }
+            }
+            LiquidGlassLog.log(android.util.Log.WARN,
+                    "tabbar: classic icon unavailable " + name);
+        } catch (Throwable t) {
+            LiquidGlassLog.logErr("tabbar: load classic icon failed " + name, t);
+        }
+        return copyHostTabDrawable(button);
+    }
+
+    private static void appendClassicPresentationSignature(
+            java.lang.StringBuilder sig,
+            android.widget.RadioGroup bar,
+            java.util.List<Integer> tokens) {
+        for (int token : tokens) {
+            if (token == TOKEN_SEARCH) {
+                sig.append("|classic-search");
+                continue;
+            }
+            android.widget.RadioButton button = findButtonById(bar, token);
+            sig.append("|classic:").append(token).append(':')
+                    .append(resourceEntryName(button)).append(':')
+                    .append(classicTabDrawableName(button));
+        }
+    }
+
     private static void rebuildTabBar(
             com.example.liquidglass.LiquidGlassTabBar tabBar) {
         try {
@@ -1728,7 +2002,13 @@ public final class LiquidGlassInstaller {
             }
             sig.append('|').append(GlassConfig.fitTabs ? 'F' : 'f')
                     .append(publishHidden ? 'P' : 'p')
-                    .append(searchDrawable != null ? 'S' : 's');
+                    .append(searchDrawable != null ? 'S' : 's')
+                    .append(GlassConfig.followCloudBottomBar ? 'C' : 'c');
+            if (GlassConfig.followCloudBottomBar) {
+                appendHostPresentationSignature(sig, bar, tokens);
+            } else {
+                appendClassicPresentationSignature(sig, bar, tokens);
+            }
             String nextSig = sig.toString();
             if (nextSig.equals(sBuildSig)) {
 
@@ -1795,12 +2075,12 @@ public final class LiquidGlassInstaller {
 
                     continue;
                 }
-                Drawable icon = rb.getCompoundDrawables()[1];
-                if (icon != null) {
-                    icon.mutate();
-                }
+                Drawable icon = GlassConfig.followCloudBottomBar
+                        ? copyHostTabDrawable(rb) : classicTabDrawable(rb);
+                CharSequence title = GlassConfig.followCloudBottomBar
+                        ? rb.getText() : classicTabTitle(rb);
                 items.add(new com.example.liquidglass.LiquidGlassTabBar.TabItem(
-                        rb.getText(), icon));
+                        title, icon));
                 buttons.add(rb);
             }
             if (items.isEmpty()) {
@@ -3543,6 +3823,9 @@ public final class LiquidGlassInstaller {
                     prepareSelectionLayout(tabBar, i);
                     tabBar.setSelectedIndex(i);
                     applyTabBarOverLight(tabBar, !sChromeLight);
+                    if (tabBar instanceof MiuixGlassTabBar) {
+                        ((MiuixGlassTabBar) tabBar).onMiuixSelectionChanged();
+                    }
                     break;
                 }
             }
